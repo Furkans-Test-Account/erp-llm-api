@@ -5,11 +5,12 @@ using Api.Services.Abstractions;
 namespace Api.Services
 {
     /// <summary>
-    /// Geliştirilmiş anahtar-kelime tabanlı yönlendirici.
-    /// - Satış & Sevkiyat için güçlü ağırlıklar (satış/sipariş/tutar/ürün/kategori)
-    /// - AI & Sohbet sinyallerini düşük ağırlıkla puanlar
-    /// - Tablo adları eşleşirse bonus verir
-    /// - Deterministik tie-break (yüksek skor, sonra tablo sayısı, sonra alfabetik)
+    /// Nebim-aware yönlendirici.
+    /// - Soru metnini (req.Question) inceleyip her pack için domain'e özel skor üretir.
+    /// - Domain sinyalleri Nebim terminolojisine göre ayarlanmıştır
+    ///   (cari hesap, fatura, mağaza, satışçı, dil tanımı, oyun kampanyası vs).
+    /// - Tablo adı geçtiyse ekstra bonus verir.
+    /// - Deterministik tie-break: skor, tablo zenginliği, alfabetik.
     /// </summary>
     public class QuestionRouter : IQuestionRouter
     {
@@ -22,85 +23,141 @@ namespace Api.Services
             foreach (var p in slice.Packs)
             {
                 var score = 0;
+                var packName = (p.Name ?? string.Empty).ToLowerInvariant();
+                var packId = (p.CategoryId ?? string.Empty).ToLowerInvariant();
 
-                // ---------------------------
-                // 1) İş alanı sinyalleri
-                // ---------------------------
+                // -------------------------------------------------
+                // 1) PACK-BAZI DOMAIN SKORLAMA
+                // -------------------------------------------------
+                // Burada amaç şu:
+                //   Eğer pack cari_hesap ise sadece cari_hesap ile ilgili anahtar kelimelerden puan al.
+                //   Eğer pack satis_finans ise satış / fatura / sipariş kelimelerinden puan al.
+                //   vs.
+                // Böylece yanlış pack'e puan yazmıyoruz.
 
-                // Satış & Sevkiyat (çok güçlü)
-                score += Count(q, @"sat[ıi]ş|sipari[sş]|order|tutar|ciro|gelir|adet|miktar|quantity|price|amount|ürün|product|kategori|category|kargo|ship|sevkiyat") * 3;
-                if (Contains(p.Name, "satış")) score += 6;
-                if (Contains(p.Name, "sevkiyat")) score += 3;
+                // ---- cari_hesap ----
+                if (packId.Contains("cari") || packName.Contains("cari") || packName.Contains("hesap"))
+                {
+                    // cari, müşteri, tedarikçi, iletişim, kredi limiti, ödeme şartı, e-fatura/e-irsaliye
+                    score += Count(q, @"\bcari\b|\bmüşteri\b|\bmusteri\b|\btedarikçi\b|\btedarikci\b") * 4;
+                    score += Count(q, @"cari\s*kodu|cari\s*hesap\s*kodu|curracccode|curracctypecode") * 4;
+                    score += Count(q, @"kredi\s*limiti|credit\s*limit|risk\s*limiti|payment\s*term|ödeme\s*şart|odeme\s*sart") * 3;
+                    score += Count(q, @"iletişim|iletisim|telefon|phone|e-?posta|email|adres|address") * 2;
+                    score += Count(q, @"e[- ]?fatura|e[- ]?irsaliye|efatura|eirsaliye") * 2;
+                    score += Count(q, @"verg[iı]|vergi\s*no|tax\s*id|vkn|tckn") * 2;
+                    score += Count(q, @"vip|önemli\s*müşteri|öncelikli\s*müşteri|priority\s*customer") * 2;
+                }
 
-                // Katalog & İçerik
-                score += Count(q, @"product|ürün|category|kategori|review|yorum|rating|puan|stok|stock");
-                if (Contains(p.Name, "katalog")) score += 3;
+                // ---- satis_finans ----
+                if (packId.Contains("satis") || packId.Contains("finans") ||
+                    packName.Contains("satış") || packName.Contains("fatura") || packName.Contains("sipariş"))
+                {
+                    // satış, sipariş, fatura, tutar, KDV, iskonto, miktar, adet, fiyat
+                    score += Count(q, @"sat[ıi]ş|satis|sipari[sş]|sipariş|order|fatura|invoice|irsaliye") * 4;
+                    score += Count(q, @"tutar|ciro|gelir|hasılat|hasilat|amount|price|fiyat|bedel|maliyet|cost") * 3;
+                    score += Count(q, @"adet|miktar|qty|quantity|qty1|qty2") * 3;
+                    score += Count(q, @"iskonto|discount|indirim|kdv|vat|vergi\s*oran[ıi]|vatrate") * 3;
+                    score += Count(q, @"teslimat|teslim\s*tarihi|delivery\s*date|sevkiyat|shipment|kargo") * 2;
+                    score += Count(q, @"depo|warehousecode|warehouse|stok\s*çıkış|stok\s*cikis") * 2;
+                    score += Count(q, @"döviz|doviz|currency|kur|exchange\s*rate|priceexchangerate|currencycode") * 2;
+                    score += Count(q, @"vade|taksit|iscreditsale|kredi\s*sati[sş]") * 2;
+                }
 
-                // Müşteri
-                score += Count(q, @"customer|müşteri|email|e-?posta|adres|address|phone|telefon");
-                if (Contains(p.Name, "müşteri")) score += 3;
+                // ---- organizasyon ----
+                if (packId.Contains("organizasyon") || packName.Contains("organizasyon") ||
+                    packName.Contains("çalışan") || packName.Contains("calisan") ||
+                    packName.Contains("mağaza") || packName.Contains("magaza") ||
+                    packName.Contains("ofis") || packName.Contains("şube") || packName.Contains("sube"))
+                {
+                    // mağaza / ofis / şube / depo / satışçı / ekip / prim / personel / çalışma yeri
+                    score += Count(q, @"mağaza|magaza|storecode|şube|sube|ofis|officecode|işyeri|isyeri|workplace|workplacecode") * 4;
+                    score += Count(q, @"depo|warehouse|warehousecode|stok\s*lokasyon|lokasyon\s*kodu") * 3;
+                    score += Count(q, @"satışçı|satisci|salesperson|ekip|team|satış\s*ekibi|prim|incentive|komisyon") * 3;
+                    score += Count(q, @"personel|çalışan|calisan|maa[sş]|maas|payroll|bordro|payrollprofile") * 3;
+                    score += Count(q, @"iban|swift|banka\s*hesap|bank\s*account|isSubjectToEInvoice|isSubjectToEShipment") * 2;
+                    score += Count(q, @"pos|terminal|posterminalid|kasa|companycode") * 2;
+                }
 
-                // Finans (Giderler)
-                score += Count(q, @"expense|gider|masraf|fatura|ödeme|maliyet|cost");
-                if (Contains(p.Name, "finans")) score += 3;
+                // ---- sistem_tanim ----
+                if (packId.Contains("sistem") || packId.Contains("tanim") ||
+                    packName.Contains("sistem") || packName.Contains("tanım") ||
+                    packName.Contains("uygulama") || packName.Contains("dil"))
+                {
+                    // dil, language, application, config
+                    score += Count(q, @"dil|language|langcode|languagecode|locale|çeviri|ceviri") * 4;
+                    score += Count(q, @"uygulama|applicationcode|application|modül|modul|feature\s*flag|konfig|config|ayar") * 3;
+                    score += Count(q, @"versiyon|sürüm|surum|aktif\s*mi|enabled|disabled") * 2;
+                }
 
-                // Kullanıcı & Yetki
-                score += Count(q, @"user|kullanıcı|role|yetki|login|auth|authorization|authentication");
-                if (Contains(p.Name, "kullanıcı") || Contains(p.Name, "yetki")) score += 2;
+                // ---- oyun_yonetimi ----
+                if (packId.Contains("oyun") || packName.Contains("oyun") ||
+                    packName.Contains("game") || packName.Contains("puan"))
+                {
+                    // kampanya, oyun, puan, görev, skor
+                    score += Count(q, @"oyun|game|kampanya|campaign|görev|gorev|hedef|target") * 4;
+                    score += Count(q, @"puan|point|score|skor|ödül|odul|bonus") * 3;
+                    score += Count(q, @"gameid|gameline|gametype|gametypecode|gameperiyod|periyod|period") * 2;
+                }
 
-                // Operasyon & Loglama
-                score += Count(q, @"log|hata|error|istisna|exception|bildirim|notification|sayfa|page|ip|taray[ıi]c[ıi]|browser");
-                if (Contains(p.Name, "operasyon") || Contains(p.Name, "loglama")) score += 2;
-
-                // Pazar yeri
-                score += Count(q, @"marketplace|pazar|entegrasyon|integration|api\s?key");
-                if (Contains(p.Name, "pazar")) score += 2;
-
-                // AI & Sohbet (düşük öncelik)
-                score += Count(q, @"\bai\b|yapay zeka|prompt|chat|sohbet|session|message|oturum|mesaj");
-                if (Contains(p.Name, "sohbet") || Contains(p.Name, "ai")) score += 1;
-
-                // ---------------------------
-                // 2) Tablo adlarına bonus
-                // ---------------------------
+                // -------------------------------------------------
+                // 2) TABLO ADI BONUSU
+                // -------------------------------------------------
                 var tables = (p.TablesCore ?? Array.Empty<string>()).Concat(p.TablesSatellite ?? Array.Empty<string>());
                 foreach (var t in tables)
                 {
-                    if (Regex.IsMatch(q, $@"\b{Regex.Escape(t.ToLowerInvariant())}\b"))
-                        score += 3;
-                }
+                    var tLower = t.ToLowerInvariant();
+                    // Soru direkt tablo adını andırıyorsa puan
+                    if (Regex.IsMatch(q, $@"\b{Regex.Escape(tLower)}\b"))
+                        score += 5;
 
-                // Satış sorularında kritik tablolar geçiyorsa ekstra
-                if (tables.Any(t => t.Equals("Orders", StringComparison.OrdinalIgnoreCase))) score += Count(q, @"sipari[sş]|order") * 2;
-                if (tables.Any(t => t.Equals("OrderItems", StringComparison.OrdinalIgnoreCase))) score += Count(q, @"kalem|adet|miktar|quantity|sat[ıi]r") * 2;
-                if (tables.Any(t => t.Equals("Products", StringComparison.OrdinalIgnoreCase))) score += Count(q, @"ürün|product") * 2;
-                if (tables.Any(t => t.Equals("Categories", StringComparison.OrdinalIgnoreCase))) score += Count(q, @"kategori|category") * 2;
+                    // Nebim spesifik kolon ipuçlarını tabloya kredi ver:
+                    // örn. kullanıcı "CurrAccCode" diyorsa bu tablo cari_hesap ile ilişkilidir.
+                    if (tLower.StartsWith("cdcurracc") || tLower.StartsWith("prcurracc"))
+                    {
+                        score += Count(q, @"curracccode|curracctypecode|cari\s*kodu|cari\s*hesap") * 2;
+                    }
+                    if (tLower.StartsWith("trinvoice") || tLower.StartsWith("trorder"))
+                    {
+                        score += Count(q, @"fatura|invoice|sipariş|siparis|orderheader|orderline|invoiceheader|invoiceline") * 2;
+                    }
+                    if (tLower.Contains("salesperson") || tLower.Contains("workplace") || tLower.Contains("office"))
+                    {
+                        score += Count(q, @"satışçı|satisci|salesperson|workplacecode|officecode|mağaza|magaza|ofis|şube|sube") * 2;
+                    }
+                    if (tLower.StartsWith("bsapplication") || tLower.StartsWith("cddataLanguage".ToLowerInvariant()))
+                    {
+                        score += Count(q, @"applicationcode|uygulama|dil|language|langcode") * 2;
+                    }
+                    if (tLower.StartsWith("gm_") || tLower.StartsWith("gm"))
+                    {
+                        score += Count(q, @"oyun|game|puan|score|skor|kampanya|hedef") * 2;
+                    }
+                }
 
                 results.Add((p, score));
             }
 
-            // ---------------------------
-            // 3) Sıralama ve seçim
-            // ---------------------------
+            // -------------------------------------------------
+            // 3) SIRALAMA VE SEÇİM
+            // -------------------------------------------------
             var ordered = results
                 .OrderByDescending(x => x.Score)
-                // Tie-break 1: daha zengin pack (daha çok tablo)
-                .ThenByDescending(x => (x.Pack.TablesCore?.Count ?? 0) + (x.Pack.TablesSatellite?.Count ?? 0))
-                // Tie-break 2: isim alfabe
+                // tie-break #1: zengin pack (toplam tablo sayısı yüksek olan)
+                .ThenByDescending(x =>
+                    (x.Pack.TablesCore?.Count ?? 0) +
+                    (x.Pack.TablesSatellite?.Count ?? 0))
+                // tie-break #2: alfabetik
                 .ThenBy(x => x.Pack.Name, StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
             var best = ordered.FirstOrDefault().Pack ?? slice.Packs.First();
 
-            // En iyi 3 adayı döndür
             var candidates = ordered
                 .Take(3)
                 .Select(x => x.Pack.CategoryId)
                 .ToArray();
 
-            // Açıklama (debug amaçlı kısa)
-            var reason = "Anahtar kelime + tablo-ismi bonuslu eşleştirme (v2). " +
-                         "Satış/ürün/kategori/tutar sinyalleri yüksek ağırlıklı, AI/sohbet düşük ağırlıklı puanlandı.";
+            var reason = "Nebim domain kelimeleri (cari hesap, satış & fatura, mağaza/organizasyon, sistem tanımı, oyun/puan) + tablo adı eşleşmesi kullanılarak skorlandı.";
 
             return new RouteResponseDto(
                 SelectedCategoryId: best.CategoryId,

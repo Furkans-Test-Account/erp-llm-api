@@ -52,3 +52,6 @@ CodeCoverage/
 *.VisualState.xml
 TestResult.xml
 nunit-*.xml
+src/Api/appsettings.json
+src/Api/App_Data/chat.db
+

@@ -1,6 +1,6 @@
 using System.Text;
-using Api.DTOs;                    // QueryResponse
-using Api.Services.Abstractions;   // ILlmService, ISqlValidator, ISqlExecutor
+using Api.DTOs;                    
+using Api.Services.Abstractions;   
 
 namespace Api.Services
 {

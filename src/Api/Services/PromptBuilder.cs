@@ -8,7 +8,7 @@ namespace Api.Services
     public class PromptBuilder : IPromptBuilder
     {
         // =====================================================
-        // 1) schema slice icin prompt #DONE
+        // 1) schema slice icin prompt  (NebimH / Nebim V3 versiyonu)
         // =====================================================
         public string BuildSchemaSlicingPrompt(SchemaDto schema, int maxPacks = 10)
         {
@@ -17,37 +17,78 @@ namespace Api.Services
 
             var sb = new StringBuilder();
 
-            sb.AppendLine("You are a senior data modeler and BI architect.");
-            sb.AppendLine("Task: Read the database schema and propose a SMALL set of business-aligned categories (packs).");
-            sb.AppendLine($"Target number of packs: 5–{maxPacks} (do NOT exceed {maxPacks}).");
+            sb.AppendLine("Sen kidemli bir veri modelleme ve BI mimarısın.");
+            sb.AppendLine("Gorevin: Asagidaki veritabanı semasini incele ve is mantigina gore KUCUK sayida kategori (pack) uretmek.");
+            sb.AppendLine($"Hedef pack sayisi: 5–{maxPacks}. ASLA {maxPacks} uzerine cikma.");
             sb.AppendLine();
 
-            sb.AppendLine("Hard rules:");
-            sb.AppendLine("- Keep header/line tables and strong FK cliques in the SAME pack (e.g., Orders/OrderItems).");
-            sb.AppendLine("- Do NOT emit empty objects in fkEdges. Use structured edges only: { \"from\": \"Table.Col\", \"to\": \"Table.Col\" }.");
-            sb.AppendLine("- Prefer Turkish names for pack.name, but keep pack.categoryId as English/Turkish or snake case.");
+            sb.AppendLine("GENEL ZORUNLU KURALLAR:");
+            sb.AppendLine("- Her tablo EN AZ BIR pack icinde yer almak zorunda. Pack disinda tablosuz kalamaz.");
+            sb.AppendLine("- Ayni tablo birden fazla pack'te tekrar edilemez. Bir tablo ya tablesCore ya tablesSatellite olarak SADECE bir pack'te bulunur.");
+            sb.AppendLine("- Bos pack OLUSTURMA. Eger bir pack hic gercek tablo icermiyorsa o pack'i hic yazma.");
+            sb.AppendLine("- fkEdges yalnizca su formatta olmali: { \"from\": \"Tablo.Kolon\", \"to\": \"Tablo.Kolon\" }. Bos veya gecersiz obje koyma.");
+            sb.AppendLine("- pack.name Turkce, aciklayici olsun. pack.categoryId kisaltma / snake_case olabilir (ornegin cari_hesap, satis_finans, organizasyon).");
+            sb.AppendLine("- Header/Line iliskileri (ornegin trInvoiceHeader ↔ trInvoiceLine ↔ trInvoiceLineCurrency, trOrderHeader ↔ trOrderLine ↔ trOrderLineCurrency) AYNI pack icinde kalmali.");
+            sb.AppendLine("- Guclu FK ile birbirine bagli tablo kumelerini parcalaMA.");
             sb.AppendLine();
 
-            // === Bu kisim balmy db icin fine tune edilmis prompt parcasi #IMPORTANT ===
-            sb.AppendLine("Domain heuristics (very important):");
-            sb.AppendLine("- Any table that starts with or clearly relates to production (e.g., UretimEmri*, AltUretimEmri*, Uretim*, Istasyon*, LotTakip*, Vardiya*) must belong to a 'production' pack.");
-            sb.AppendLine("- Place `SiparisUretimEmri` under the 'sales' pack (if present), BUT create a bridgeRef from 'sales' to 'production' via key `UretimEmriNo` so questions about production numbers can reach production facts.");
-            sb.AppendLine("- Logistics/Shipping (e.g., Irsaliye, Sevkiyat*) → 'logistics' pack.");
-            sb.AppendLine("- Inventory/Warehouse (Depo*, DepoMov*, Sayim*, Stok*) → 'inventory' pack.");
-            sb.AppendLine("- Customer master (Cari, Customer*) → 'customer_master' pack.");
-            sb.AppendLine("- Product catalog (Products, Categories, StokKartlari, Barcodes, Mamul*) → 'catalog' pack.");
+            sb.AppendLine("DOMAIN IPUCLARI (NEBIM TARZI):");
+            sb.AppendLine("1) 'cari_hesap' benzeri bir pack olustur:");
+            sb.AppendLine("   - Cari hesap / musteri / tedarikci bilgisini tutan tablolar genelde cdCurrAcc*, prCurrAcc* ile baslar.");
+            sb.AppendLine("   - Bu tablolar kredi limiti, odeme kosulu (PaymentTerm), vergi durumlari, e-fatura / e-irsaliye zorunluluklari, VIP flag, iletişim bilgisi, adres bilgisi gibi alanlar icerebilir.");
+            sb.AppendLine("   - Ornek tablo aileleri: cdCurrAcc, cdCurrAccDesc, prCurrAccCommunication, prCurrAccPersonalInfo, prCurrAccPostalAddress, prCurrAccAttribute, cdCurrAccAttributeDesc (ve benzerleri).");
             sb.AppendLine();
 
-            sb.AppendLine("For each pack:");
-            sb.AppendLine("- tablesCore: main transactional/fact tables + tightly coupled heads/lines");
-            sb.AppendLine("- tablesSatellite: small reference/lookup/log tables kept in the pack");
-            sb.AppendLine("- fkEdges: in-pack join edges with explicit column pairs (from/to)");
-            sb.AppendLine("- bridgeRefs: essential cross-pack links like { \"toCategory\": \"production\", \"viaTables\": [\"SiparisUretimEmri\"] }");
-            sb.AppendLine("- summary: short Turkish summary (≤200 words)");
-            sb.AppendLine("- grain: Turkish, e.g., \"Sipariş\", \"Üretim Emri\", \"Depo hareketi\"");
+            sb.AppendLine("2) 'satis_finans' benzeri bir pack olustur:");
+            sb.AppendLine("   - Satis / siparis / fatura / finansal satir detaylarini tutan tablolar trInvoiceHeader, trInvoiceLine, trInvoiceLineCurrency, trOrderHeader, trOrderLine, trOrderLineCurrency gibi isimlere sahiptir.");
+            sb.AppendLine("   - Bu tablolarda urun kodu (ItemCode), renk / varyant kodlari, miktar (Qty1), fiyat (Price), iskonto (DiscountRate), KDV (VatRate), doviz bilgileri (CurrencyCode, PriceExchangeRate), teslim tarihi (DeliveryDate), WarehouseCode vb. alanlar olur.");
+            sb.AppendLine("   - FaturaHeader/SiparisHeader ile Line ve LineCurrency ayni pack'te kalmali.");
+            sb.AppendLine("   - Bu pack icin bridgeRefs ZORUNLUDUR:");
+            sb.AppendLine("       * 'cari_hesap' pack'ine bag: genelde Header tablosunda CurrAccTypeCode / CurrAccCode gibi kolonlar bulunur.");
+            sb.AppendLine("       * 'organizasyon' pack'ine bag: genelde Header tablosunda StoreCode / OfficeCode / WarehouseCode / CompanyCode vb. kolonlar bulunur.");
+            sb.AppendLine("     Bu nedenle satis_finans pack'indeki header tablolarini (or. trInvoiceHeader, trOrderHeader) bridgeRefs.viaTables icine yaz ve hem cari_hesap hem organizasyon icin bridgeRefs olustur.");
             sb.AppendLine();
 
-            sb.AppendLine("Return STRICT JSON ONLY with this exact shape:");
+            sb.AppendLine("3) 'organizasyon' benzeri bir pack olustur:");
+            sb.AppendLine("   - Magaza / ofis / depo / sirket / POS / kasa parametrelerini tasiyan tablolar (StoreCode, OfficeCode, WarehouseCode, CompanyCode, POSTerminalID, IBAN, SWIFTCode, UseBankAccOnStore, IsSubjectToEInvoice, IsSubjectToEShipment vb.) BU PACK'E girmeli.");
+            sb.AppendLine("   - Satis personeli, satis ekibi, satis tipi, prim orani gibi tablolar (cdSalesperson, cdSalespersonTeam, cdSalespersonTeamDesc, cdSalespersonType, cdSalespersonTypeDesc) BU PACK'E girmeli.");
+            sb.AppendLine("   - Organizasyona bagli IK / calisan tablolarini da (or: hrEmployeeJobTitle, hrEmployeeWorkPlace, hrEmployeePayrollProfile gibi) bu pack'e tablesSatellite olarak ekle.");
+            sb.AppendLine("   - Lokasyon / ofis / isyeri aciklamalari (cdOfficeDesc, cdWorkPlaceDesc, cdJobDepartmentDesc, cdJobTitle, cdJobTitleDesc vb.) da burada yer alabilir.");
+            sb.AppendLine("   - Bu pack GENEL olarak isyeri ve organizasyon yapisini, magaza/Ofis/Depo baglantisini, banka hesap parametrelerini ve calisan bilgisini temsil eder.");
+            sb.AppendLine();
+
+            sb.AppendLine("4) 'sistem_tanim' benzeri bir pack olustur:");
+            sb.AppendLine("   - Sistem / uygulama / dil tanimlari (bsApplication, bsApplicationDesc, cdDataLanguage, cdDataLanguageDesc vb.).");
+            sb.AppendLine("   - Bu pack tipik olarak konfigurasyon ve dil destegi bilgisidir.");
+            sb.AppendLine();
+
+            sb.AppendLine("5) Diger pack'ler YALNIZCA gerekliyse olustur:");
+            sb.AppendLine("   - Ornegin ayri bir 'finans_parametre' pack'i olusturmak istiyorsan, oraya IBAN / SWIFT / banka hesabı / vergi yukumlulugu gibi TAMAMI finansal parametre tablolarini koymalisin.");
+            sb.AppendLine("   - Eger boyle ayri bir tablo seti bulamiyorsan veya sadece baska pack'lerde zaten kullanilmis ayni tablolar varsa, bu pack'i HIC yazma.");
+            sb.AppendLine("   - Kesinlikle SADECE tekrar tablo koymak icin yeni pack olusturma.");
+            sb.AppendLine();
+
+            sb.AppendLine("BRIDGEREFS KURALLARI:");
+            sb.AppendLine("- satis_finans pack'inin bridgeRefs alaninda EN AZ iki kayit olmali:");
+            sb.AppendLine("    { \"toCategory\": \"cari_hesap\", \"viaTables\": [\"trInvoiceHeader\", \"trOrderHeader\"] }");
+            sb.AppendLine("    { \"toCategory\": \"organizasyon\", \"viaTables\": [\"trInvoiceHeader\", \"trOrderHeader\"] }");
+            sb.AppendLine("- cari_hesap pack'i icin bridgeRefs, satis_finans ile bag kurabilir (musterinin satis hareketlerine ulasmak icin).");
+            sb.AppendLine("- organizasyon pack'i icin bridgeRefs zorunlu DEGIL ama olabilir (or. organizasyon → satis_finans uzerinden magaza satis performansi).");
+            sb.AppendLine();
+
+            sb.AppendLine("HER PACK OBJESI SU ALANLARA SAHIP OLMALI:");
+            sb.AppendLine("- categoryId: kisa id (ornegin 'cari_hesap', 'satis_finans', 'organizasyon', 'sistem_tanim').");
+            sb.AppendLine("- name: Turkce okunabilir isim (ornegin 'Cari Hesaplar', 'Satis & Fatura Satirlari').");
+            sb.AppendLine("- tablesCore: o domainin ana islemsel tabloları (header, line, vs). BOS OLMAMALI.");
+            sb.AppendLine("- tablesSatellite: lookup / aciklama / parametre / bagli detay tabloları.");
+            sb.AppendLine("- fkEdges: sadece bu pack icindeki join kenarlari (\"from\": \"Tablo.Kolon\", \"to\": \"Tablo.Kolon\").");
+            sb.AppendLine("- bridgeRefs: diger pack'lere kritik kopruler. Ornek:");
+            sb.AppendLine("    { \"toCategory\": \"cari_hesap\", \"viaTables\": [\"trInvoiceHeader\"] }");
+            sb.AppendLine("- summary: Turkce ozet (<=200 kelime).");
+            sb.AppendLine("- grain: Kayit tanesi. Ornek: 'Cari hesap', 'Fatura satiri', 'Organizasyon kaydi', 'Sistem tanimi'.");
+            sb.AppendLine();
+
+            sb.AppendLine("STRICT JSON FORMATINDA DONDUR. SADECE JSON CIKART. Yapı su sekilde olmali:");
             sb.AppendLine("{");
             sb.AppendLine("  \"schemaName\": string,");
             sb.AppendLine("  \"packs\": [");
@@ -65,7 +106,7 @@ namespace Api.Services
             sb.AppendLine("}");
             sb.AppendLine();
 
-            // schema ozeti (tablolar + kolon isimleri + FK/giden-gelen)
+            // schema dökümü: tablolar, kolonlar, FK ilişkileri
             sb.AppendLine($"SchemaName: {schema.SchemaName}");
             sb.AppendLine("Tables:");
             foreach (var t in schema.Tables.OrderBy(t => t.Name))
@@ -98,12 +139,14 @@ namespace Api.Services
             }
 
             sb.AppendLine();
-            sb.AppendLine("Return ONLY the JSON. No commentary.");
+            sb.AppendLine("SADECE JSON DONDUR. Aciklama yazma.");
             return sb.ToString();
         }
 
+
         // =====================================================
-        // 2) route promptu , hangi soru hangi packe ait #DONE
+        // 2) route promptu , hangi soru hangi packe ait
+        // (simdilik ayni birakiyoruz; tek DB test ediyorsun)
         // =====================================================
         public string BuildRoutingPrompt(SliceResultDto sliced, string userQuestion, int topK = 3)
         {
@@ -125,7 +168,8 @@ namespace Api.Services
             sb.AppendLine("}");
             sb.AppendLine();
 
-            // === ROUTING HEURISTICS (kalici) ===
+            // NOTE: burasi hala eski heuristic'leri kullaniyor.
+            // Ileride Nebim icin 'cari', 'satis', 'organizasyon' kelimeleriyle update edebiliriz.
             sb.AppendLine("Heuristics:");
             sb.AppendLine("- If the question contains any of: UretimEmri, ÜretimEmri, UretilecekUrunKodu, Üretilecek_Ürünkodu, Istasyon, Lot → prefer 'production'.");
             sb.AppendLine("- If it contains: Siparis, Sipariş, Teslimat, Satış → prefer 'sales'.");
@@ -161,7 +205,7 @@ namespace Api.Services
         }
 
         // =====================================================
-        // 3) PACK-SCOPED SQL GENERATION PROMPT
+        // 3) PACK-SCOPED SQL GENERATION PROMPT  (NebimH domain hint ile)
         // =====================================================
         public string BuildPromptForPack(
             string userQuestion,
@@ -259,20 +303,24 @@ namespace Api.Services
                 }
             }
 
-            // Guardrails: type safety #IMPORTANT
+            // Guardrails: type safety
             sb.AppendLine();
             sb.AppendLine("Type-safety rules:");
             sb.AppendLine("- NEVER compare string literals to numeric ID columns.");
-            sb.AppendLine("- If the user mentions a NAME/TITLE, JOIN to the lookup table and filter by its TEXT column.");
+            sb.AppendLine("- If the user mentions a NAME/TITLE, JOIN to the lookup table and filter by its TEXT/VARCHAR column.");
             sb.AppendLine("- Only compare ID-to-ID, TEXT-to-TEXT.");
-            sb.AppendLine("- Use explicit joins to dimension/lookup tables when filtering by human-readable fields.");
+            sb.AppendLine("- Use explicit joins to dimension/lookup tables when filtering by human-readable fields (e.g. StoreCode, SalespersonTeamName, CurrAccName).");
 
-            // Domain hint , llm icin
+            // Nebim domain hint
             sb.AppendLine();
-            sb.AppendLine("Domain hint:");
-            sb.AppendLine("- If filtering by production order number (e.g., UretimEmriNo), consider that the key is stored on the production fact (e.g., UretimEmriP) and join/lookup there to fetch fields like UretilecekUrunKodu.");
+            sb.AppendLine("Domain hint (Nebim-like ERP):");
+            sb.AppendLine("- 'Cari hesap' (musteri/tedarikci) bilgileri CurrAcc* / cdCurrAcc* / prCurrAcc* tablolardadir. Bu tablolarda kredi limiti, odeme kosulu, e-fatura / e-irsaliye durumu, iletisim bilgileri bulunabilir.");
+            sb.AppendLine("- Satis / fatura / siparis satirlari ItemCode, Qty1, Price, VatRate, DiscountRate, CurrencyCode, WarehouseCode gibi kolonlar icerir. Bunlar genelde line ve line-currency tablolarida tutulur.");
+            sb.AppendLine("- Magaza / ofis / depo / satisci yapisi StoreCode, OfficeCode, WarehouseCode, SalespersonTeamCode gibi alanlarla temsil edilir; eger soru 'hangi magaza' veya 'hangi satis ekibi' diyorsa bu alanlari kullan.");
+            sb.AppendLine("- Doviz (CurrencyCode, ExchangeRate) gibi alanlar ayri satir tablosunda olabilir; ihtiyac varsa JOIN et.");
+            sb.AppendLine("- Eger kullanici tablo veya alan adi vermediyse ama 'musteri', 'cari', 'magaza', 'sube', 'satis miktari', 'KDV', 'iskonto' gibi ticari kavramlar soruyorsa yukaridaki tablolar tipik olarak dogru yerdir.");
+            sb.AppendLine();
 
-            sb.AppendLine();
             sb.AppendLine($"UserQuestion: {userQuestion}");
             sb.AppendLine("Output requirements:");
             sb.AppendLine("- Generate a single efficient SELECT statement.");
@@ -294,3 +342,4 @@ namespace Api.Services
         }
     }
 }
+

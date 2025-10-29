@@ -17,9 +17,7 @@ builder.Host.UseSerilog((ctx, cfg) =>
        .Enrich.FromLogContext();
 });
 
-// -----------------------------
-// CORS (Vite dev server için 5173)
-// -----------------------------
+// cors 
 const string CorsPolicy = "DevCors";
 builder.Services.AddCors(options =>
 {
