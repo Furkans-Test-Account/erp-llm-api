@@ -18,8 +18,16 @@ namespace Api.Controllers
         [HttpPost("start")]
         public async Task<IActionResult> StartChat(CancellationToken ct)
         {
-            var id = await _store.EnsureThreadAsync(null, ct);
-            return Ok(new { conversationId = id });
+            try
+            {
+                var id = await _store.EnsureThreadAsync(null, ct);
+                return Ok(new { conversationId = id });
+            }
+            catch (Exception ex)
+            {
+                // Optionally log the exception here, if you have a logger
+                return StatusCode(500, new { error = "Failed to start chat", detail = ex.Message });
+            }
         }
 
         // GET /api/chat/{id}/messages

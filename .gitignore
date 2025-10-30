@@ -55,3 +55,4 @@ nunit-*.xml
 src/Api/appsettings.json
 src/Api/App_Data/chat.db
 
+src/Api/appsettings.json
