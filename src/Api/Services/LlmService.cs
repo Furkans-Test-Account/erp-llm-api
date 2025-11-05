@@ -1,25 +1,29 @@
+// File: src/Api/Services/LlmService.cs
+#nullable enable
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Linq;
 using Api.Services.Abstractions;
 
 namespace Api.Services
 {
-    
     public class LlmService : ILlmService
     {
         private readonly HttpClient _client;
         private readonly IConfiguration _cfg;
+        private readonly ILlmAudit _audit;
 
-        public LlmService(HttpClient client, IConfiguration cfg)
+        public LlmService(HttpClient client, IConfiguration cfg, ILlmAudit audit)
         {
             _client = client;
             _cfg = cfg;
+            _audit = audit;
         }
 
         // ======================================================
-        // 1) generating first sql #DONE
+        // 1) First SQL generation (pack-scoped)
         // ======================================================
         public async Task<string> GetSqlAsync(string prompt, CancellationToken ct)
         {
@@ -27,6 +31,8 @@ namespace Api.Services
             var (model, temperature, maxTokens) = GetModelConfig();
 
             _client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+            _client.DefaultRequestHeaders.Accept.Clear();
+            _client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
             var system = string.Join(' ', new[]
             {
@@ -50,12 +56,19 @@ namespace Api.Services
                 }
             };
 
+            // AUDIT
+            if (_audit.Enabled)
+            {
+                var reqJson = JsonSerializer.Serialize(body, SerializerOptions);
+                await _audit.SaveAsync("pack-sql", prompt, reqJson, ct);
+            }
+
             var sql = await SendAndExtractSqlAsync(body, ct);
             return SqlServerNormalize(sql);
         }
 
         // ======================================================
-        // 2) Self-heal , max 2 tries #DONE
+        // 2) Self-heal (refine), max 2 tries external orchestrator tarafından çağrılır
         // ======================================================
         public async Task<string> RefineSqlAsync(
             string userQuestion,
@@ -69,6 +82,8 @@ namespace Api.Services
             var (model, temperature, maxTokens) = GetModelConfig();
 
             _client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+            _client.DefaultRequestHeaders.Accept.Clear();
+            _client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
             var system = string.Join(' ', new[]
             {
@@ -94,12 +109,19 @@ namespace Api.Services
                 }
             };
 
+            // AUDIT
+            if (_audit.Enabled)
+            {
+                var reqJson = JsonSerializer.Serialize(body, SerializerOptions);
+                await _audit.SaveAsync("refine", refinePrompt, reqJson, ct);
+            }
+
             var sql = await SendAndExtractSqlAsync(body, ct);
             return SqlServerNormalize(sql);
         }
 
         // ======================================================
-        // 3) schema slice / routing using openai #DONE
+        // 3) JSON (routing/slicing vs.) – strict JSON döndür
         // ======================================================
         public async Task<string> GetRawJsonAsync(string prompt, CancellationToken ct)
         {
@@ -107,8 +129,9 @@ namespace Api.Services
             var (model, temperature, maxTokens) = GetModelConfig();
 
             _client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+            _client.DefaultRequestHeaders.Accept.Clear();
+            _client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
-            
             var system = "You output ONLY strict, valid JSON.";
 
             var framedPrompt = new StringBuilder()
@@ -125,7 +148,7 @@ namespace Api.Services
             {
                 model,
                 temperature,
-                max_tokens = Math.Max(maxTokens, 4000), // kesilmeyi azalt
+                max_tokens = Math.Max(maxTokens, 4000),
                 response_format = new { type = "json_object" },
                 messages = new[]
                 {
@@ -136,7 +159,14 @@ namespace Api.Services
 
             var reqJson = JsonSerializer.Serialize(body, SerializerOptions);
 
-            using var req = new HttpRequestMessage(HttpMethod.Post, "v1/chat/completions")
+            // AUDIT
+            if (_audit.Enabled)
+            {
+                await _audit.SaveAsync("route", framedPrompt, reqJson, ct);
+            }
+
+            var endpoint = BuildUri(); // absolute URI (BaseUrl + ChatPath)
+            using var req = new HttpRequestMessage(HttpMethod.Post, endpoint)
             {
                 Content = new StringContent(reqJson, Encoding.UTF8, "application/json")
             };
@@ -153,23 +183,19 @@ namespace Api.Services
             var content = parsed.choices?.FirstOrDefault()?.message?.content?.Trim()
                           ?? throw new InvalidOperationException("OpenAI returned empty content.");
 
-            
             var between = ExtractBetween(content, "###JSON_START###", "###JSON_END###");
             var json = string.IsNullOrWhiteSpace(between) ? content : between;
 
-            
             if (TryParseJson(json, out _)) return json;
 
-            // Basic repair 
             var repaired = TryRepairJson(json);
             if (TryParseJson(repaired, out _)) return repaired;
 
-            // if not throw error
             throw new InvalidOperationException("LLM JSON is invalid and could not be repaired.");
         }
 
         // ======================================================
-        // Yardımcılar
+        // Helpers
         // ======================================================
 
         private string GetApiKeyOrThrow()
@@ -187,11 +213,25 @@ namespace Api.Services
             return (model, temperature, maxTokens);
         }
 
+        /// <summary>
+        /// OpenAI:BaseUrl (ABSOLUTE, e.g. https://api.openai.com/) + OpenAI:ChatPath (default v1/chat/completions)
+        /// </summary>
+        private Uri BuildUri()
+        {
+            var baseUrl = _cfg["OpenAI:BaseUrl"] ?? "https://api.openai.com/";
+            if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var baseUri))
+                throw new InvalidOperationException("OpenAI:BaseUrl must be an absolute URI, e.g. https://api.openai.com/");
+
+            var path = _cfg["OpenAI:ChatPath"] ?? "v1/chat/completions";
+            return new Uri(baseUri, path);
+        }
+
         private async Task<string> SendAndExtractSqlAsync(ChatCompletionsRequest body, CancellationToken ct)
         {
             var json = JsonSerializer.Serialize(body, SerializerOptions);
+            var endpoint = BuildUri();
 
-            using var req = new HttpRequestMessage(HttpMethod.Post, "v1/chat/completions")
+            using var req = new HttpRequestMessage(HttpMethod.Post, endpoint)
             {
                 Content = new StringContent(json, Encoding.UTF8, "application/json")
             };
@@ -255,11 +295,10 @@ namespace Api.Services
             return sb.ToString();
         }
 
-        // ---------------- SQL extraction & normalization ---------------- #DONE
+        // ---------------- SQL extraction & normalization ----------------
 
         private static string ExtractSql(string text)
         {
-            // ```sql ... ``` bloklarını temizleme
             var fence = Regex.Match(text, "```sql\\s*([\\s\\S]*?)```", RegexOptions.IgnoreCase);
             if (fence.Success) text = fence.Groups[1].Value;
 
@@ -303,7 +342,7 @@ namespace Api.Services
                 s = Regex.Replace(s, @"\bselect\b", $"SELECT TOP {n}", RegexOptions.IgnoreCase);
             }
 
-            // RESERVED tablo isimleri
+            // RESERVED table names
             var reserved = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
             {
                 "USER","ORDER","GROUP","KEY","ROLE","VALUE","VALUES","TABLE","INDEX"
@@ -345,10 +384,8 @@ namespace Api.Services
 
         private static string TryRepairJson(string s)
         {
-            
             s = s.Replace("```json", "").Replace("```", "").Trim();
 
-           
             int first = s.IndexOf('{');
             int last = s.LastIndexOf('}');
             if (first >= 0)
@@ -357,7 +394,6 @@ namespace Api.Services
                 s = s.Substring(first, last - first + 1);
             }
 
-            
             int openCurly = s.Count(c => c == '{');
             int closeCurly = s.Count(c => c == '}');
             int openSquare = s.Count(c => c == '[');
@@ -366,13 +402,12 @@ namespace Api.Services
             if (openSquare > closeSquare) s += new string(']', openSquare - closeSquare);
             if (openCurly > closeCurly) s += new string('}', openCurly - closeCurly);
 
-            
             s = Regex.Replace(s, @",\s*(\]|\})", "$1");
 
             return s.Trim();
         }
 
-        // OpenAI DTO's 
+        // ---------- OpenAI DTOs ----------
 
         private static readonly JsonSerializerOptions SerializerOptions = new()
         {

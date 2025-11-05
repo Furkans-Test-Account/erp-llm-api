@@ -7,5 +7,7 @@ public interface ISlicedSchemaCache
 {
     bool TryGet(out SliceResultDto? sliced);
     void Set(SliceResultDto sliced);
-    void Clear();
+    void SetDepartment(DepartmentSliceResultDto dept);
+    bool TryGetDepartment(out DepartmentSliceResultDto? dept);
+
 }

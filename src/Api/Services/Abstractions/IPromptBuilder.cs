@@ -6,13 +6,12 @@ namespace Api.Services.Abstractions
     /// LLM prompt oluşturucu:
     /// 1) Şemayı kategorilere (pack'lere) ayırmak için slicing prompt'u üretir.
     /// 2) Seçilen pack'e göre SQL üretim prompt'u oluşturur.
+    /// 3) CategoryId ile hızlı pack-seçip (adjacent opsiyonlu) prompt üretir.
     /// </summary>
     public interface IPromptBuilder
     {
-        /// <summary>
-        /// LLM'in şemayı kategorilere ayırması (schema slicing) için kullanılacak prompt'u üretir.
-        /// </summary>
-        string BuildSchemaSlicingPrompt(SchemaDto schema, int maxPacks = 12);
+
+
 
         /// <summary>
         /// Seçilen pack (ve opsiyonel komşu pack) bağlamında, kullanıcı sorusuna karşılık
@@ -28,9 +27,21 @@ namespace Api.Services.Abstractions
             bool forbidDml = true,
             bool preferAnsi = true);
 
-        
-        string BuildRoutingPrompt(SliceResultDto sliced, string userQuestion, int topK = 3); // adım 2’de kullanacağız
-       
-    }
+        /// <summary>
+        /// CategoryId ile doğrudan pack seçerek (opsiyonel adjacent kategorilerle) prompt üretir.
+        /// UI'da departman seçimine uygun kısayol.
+        /// </summary>
+        string BuildPromptForCategory(
+            string userQuestion,
+            DepartmentSliceResultDto deptSlice,
+            string categoryId,
+            SchemaDto fullSchema,
+            IReadOnlyList<string>? adjacentCategoryIds = null,
+            string sqlDialect = "SQL Server (T-SQL)");
 
+        /// <summary>
+        /// Soru -> pack yönlendirme prompt'u (topK aday döner).
+        /// </summary>
+        string BuildRoutingPrompt(SliceResultDto sliced, string userQuestion, int topK = 3);
+    }
 }

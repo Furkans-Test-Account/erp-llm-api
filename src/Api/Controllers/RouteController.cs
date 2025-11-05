@@ -1,49 +1,72 @@
+// File: src/Api/Controllers/RouteController.cs
+#nullable enable
 using Microsoft.AspNetCore.Mvc;
-using Api.DTOs;
 using Api.Services.Abstractions;
-using System.Text.Json;
+using Api.DTOs;
 
 namespace Api.Controllers
 {
     [ApiController]
-    [Route("api/[controller]")]
-    public class RouteController : ControllerBase
+    [Route("api/route")]
+    public sealed class RouteController : ControllerBase
     {
+        private readonly ILogger<RouteController> _logger;
         private readonly ISlicedSchemaCache _cache;
         private readonly IPromptBuilder _promptBuilder;
-        private readonly ILlmService _llmService;
+        private readonly ISchemaService _schema;
+        private readonly ILlmService _llm;
 
-        public RouteController(ISlicedSchemaCache cache, IPromptBuilder promptBuilder, ILlmService llmService)
+        public RouteController(
+            ILogger<RouteController> logger,
+            ISlicedSchemaCache cache,
+            IPromptBuilder promptBuilder,
+            ISchemaService schema,
+            ILlmService llm)
         {
+            _logger = logger;
             _cache = cache;
             _promptBuilder = promptBuilder;
-            _llmService = llmService;
+            _schema = schema;
+            _llm = llm;
         }
 
-        // POST /api/route/llm
         [HttpPost("llm")]
         public async Task<IActionResult> RouteWithLlm([FromBody] RouteRequestDto req, CancellationToken ct)
         {
-            if (!_cache.TryGet(out var sliced) || sliced == null)
-                return BadRequest(new { error = "No cached sliced schema. Run /api/schema/slice/llm first." });
+            if (!_cache.TryGetDepartment(out var dept) || dept == null)
+                return BadRequest(new { error = "Department slice not loaded. Upload & activate first." });
 
-            var prompt = _promptBuilder.BuildRoutingPrompt(sliced, req.Question);
-            var json = await _llmService.GetRawJsonAsync(prompt, ct);
+            var fullSchema = await _schema.GetSchemaAsync(ct);
 
-            RouteResponseDto? routed;
-            try
+            // 1) Basit heuristics veya mevcut router ile en uygun categoryId’yi bul
+            // (Mevcudu koruyalım; istersen LLM routing prompt’unu da kullanabilirsin.)
+            var best = dept.Packs.FirstOrDefault()
+                       ?? throw new InvalidOperationException("No packs in department slice");
+
+            // 2) İstersen adjacent category ids belirle (opsiyonel)
+            var adjacent = Array.Empty<string>();
+
+            // 3) ✅ Department overload ile prompt üret (AllowedRefViews + FkEdges/BridgeRefs görünür!)
+            var prompt = _promptBuilder.BuildPromptForCategory(
+                userQuestion: req.Question,
+                deptSlice: dept,
+                categoryId: best.CategoryId,
+                fullSchema: fullSchema,
+                adjacentCategoryIds: adjacent.ToList()
+            );
+
+            // Debug amaçlı prompt’u diske yazmak istersen:
+            // await _llm.SaveDebugPromptAsync("route-sql", prompt, ct);
+
+            // 4) SQL al
+            var sql = await _llm.GetSqlAsync(prompt, ct);
+
+            return Ok(new
             {
-                routed = JsonSerializer.Deserialize<RouteResponseDto>(json, new JsonSerializerOptions
-                {
-                    PropertyNameCaseInsensitive = true
-                }) ?? throw new InvalidOperationException("Failed to parse LLM routing JSON.");
-            }
-            catch (Exception ex)
-            {
-                return BadRequest(new { error = "LLM routing JSON parse failed", detail = ex.Message, raw = json });
-            }
-
-            return Ok(routed);
+                selected = best.CategoryId,
+                packName = best.Name,
+                sql
+            });
         }
     }
 }

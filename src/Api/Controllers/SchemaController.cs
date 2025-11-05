@@ -12,21 +12,15 @@ namespace Api.Controllers
     public class SchemaController : ControllerBase
     {
         private readonly ISchemaService _schemaService;
-        private readonly IPromptBuilder _promptBuilder;
-        private readonly ILlmService _llmService;
         private readonly ISlicedSchemaCache _cache;
         private readonly IWebHostEnvironment _env;
 
         public SchemaController(
             ISchemaService schemaService,
-            IPromptBuilder promptBuilder,
-            ILlmService llmService,
             ISlicedSchemaCache cache,
             IWebHostEnvironment env)
         {
             _schemaService = schemaService;
-            _promptBuilder = promptBuilder;
-            _llmService = llmService;
             _cache = cache;
             _env = env;
         }
@@ -97,107 +91,7 @@ namespace Api.Controllers
         }
 
 
-        [HttpPost("slice/llm")]
-        public async Task<IActionResult> SliceWithLlm(CancellationToken ct)
-        {
-            var schema = await _schemaService.GetSchemaAsync(ct);
-            var prompt = _promptBuilder.BuildSchemaSlicingPrompt(schema);
-            var json = await _llmService.GetRawJsonAsync(prompt, ct);
-
-            SliceResultDto? sliced;
-            try
-            {
-                sliced = JsonSerializer.Deserialize<SliceResultDto>(json, new JsonSerializerOptions
-                {
-                    PropertyNameCaseInsensitive = true
-                }) ?? throw new InvalidOperationException("Failed to parse LLM sliced schema JSON.");
-            }
-            catch (Exception ex)
-            {
-                return BadRequest(new { error = "JSON parse failed", detail = ex.Message, raw = json });
-            }
-
-            _cache.Set(sliced);
-            return Ok(new { cached = true, packs = sliced.Packs.Count });
-        }
-
-        [HttpPost("slice/chunked")]
-        public async Task<IActionResult> SliceChunkedWithLlm(CancellationToken ct)
-        {
-            var schema = await _schemaService.GetSchemaAsync(ct);
-            var groupedTables = GroupTablesByPrefix(schema.Tables);
-            var allPacks = new List<PackDto>();
-            const int maxTablesPerChunk = 40; // Tune as needed for your LLM/context
-
-            foreach (var group in groupedTables)
-            {
-                var tableChunks = ChunkTables(group.Value, maxTablesPerChunk);
-                int chunkIndex = 0;
-                foreach (var chunk in tableChunks)
-                {
-                    var groupSchema = new SchemaDto(
-                        SchemaName: $"Group_{group.Key}_{chunkIndex}",
-                        Tables: chunk
-                    );
-                    chunkIndex++;
-
-                    var prompt = _promptBuilder.BuildSchemaSlicingPrompt(groupSchema);
-                    // Optionally: Add a prompt length/token estimation here as a safeguard
-
-                    SliceResultDto? result = null;
-                    try
-                    {
-                        var json = await _llmService.GetRawJsonAsync(prompt, ct);
-                        result = JsonSerializer.Deserialize<SliceResultDto>(json, new JsonSerializerOptions
-                        {
-                            PropertyNameCaseInsensitive = true
-                        });
-                    }
-                    catch (Exception)
-                    {
-                        continue;
-                    }
-                    if (result != null && result.Packs != null)
-                        allPacks.AddRange(result.Packs);
-                }
-            }
-
-            var aggregated = new SliceResultDto(
-                schema.SchemaName + "_Chunked",
-                allPacks
-            );
-            _cache.Set(aggregated);
-            return Ok(new { cached = true, packs = allPacks.Count });
-        }
-
-        // Helper to group tables by prefix (post-dbo stripping)
-        private static Dictionary<string, List<TableDto>> GroupTablesByPrefix(IReadOnlyList<TableDto> tables)
-        {
-            var dict = new Dictionary<string, List<TableDto>>();
-            foreach (var t in tables)
-            {
-                var name = t.Name.StartsWith("dbo.") ? t.Name.Substring(4) : t.Name;
-                var prefix = name.Length >= 2 ? name.Substring(0, 2).ToLowerInvariant() : name.ToLowerInvariant();
-                if (!dict.TryGetValue(prefix, out var list))
-                {
-                    list = new List<TableDto>();
-                    dict[prefix] = list;
-                }
-                list.Add(t);
-            }
-            return dict;
-        }
-
-        // Break a table list into smaller chunks (for big groups)
-        private static List<List<TableDto>> ChunkTables(List<TableDto> tables, int maxPerChunk)
-        {
-            var chunks = new List<List<TableDto>>();
-            for (int i = 0; i < tables.Count; i += maxPerChunk)
-            {
-                chunks.Add(tables.GetRange(i, Math.Min(maxPerChunk, tables.Count - i)));
-            }
-            return chunks;
-        }
+        
 
         [HttpGet("slice/cached")]
         public IActionResult GetSliceCache()
@@ -206,7 +100,7 @@ namespace Api.Controllers
             {
                 return Ok(s);
             }
-            return NotFound(new { error = "No cached sliced schema. Run POST /api/schema/slice/llm first." });
+            return NotFound(new { error = "No cached sliced schema. Load a department slice first (e.g., POST /api/schema/dept/slice/upload)." });
         }
     }
 }
