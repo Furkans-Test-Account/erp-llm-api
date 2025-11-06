@@ -54,5 +54,6 @@ TestResult.xml
 nunit-*.xml
 src/Api/appsettings.json
 src/Api/App_Data/chat.db
-
+src/Api/App_Data
+src/Api/appsettings.json
 src/Api/appsettings.json

@@ -28,6 +28,19 @@ namespace Api.Services.Abstractions
             bool preferAnsi = true);
 
         /// <summary>
+        /// Department-aware pack prompt (uses DepartmentPackDto and department adjacents).
+        /// </summary>
+        string BuildPromptForPack(
+            string userQuestion,
+            DepartmentPackDto deptPack,
+            SchemaDto fullSchema,
+            IReadOnlyList<DepartmentPackDto>? adjacentPacks = null,
+            string sqlDialect = "SQL Server (T-SQL)",
+            bool requireSingleSelect = true,
+            bool forbidDml = true,
+            bool preferAnsi = true);
+
+        /// <summary>
         /// CategoryId ile doğrudan pack seçerek (opsiyonel adjacent kategorilerle) prompt üretir.
         /// UI'da departman seçimine uygun kısayol.
         /// </summary>

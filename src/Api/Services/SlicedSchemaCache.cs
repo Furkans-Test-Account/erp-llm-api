@@ -8,23 +8,12 @@ namespace Api.Services
 {
     public sealed class SlicedSchemaCache : ISlicedSchemaCache
     {
-        private SliceResultDto? _slice;
         private DepartmentSliceResultDto? _dept;
         private readonly ReaderWriterLockSlim _lock = new(LockRecursionPolicy.SupportsRecursion);
 
-        public void Set(SliceResultDto slice)
-        {
-            _lock.EnterWriteLock();
-            try { _slice = slice; }
-            finally { _lock.ExitWriteLock(); }
-        }
-
-        public bool TryGet(out SliceResultDto? slice)
-        {
-            _lock.EnterReadLock();
-            try { slice = _slice; return slice != null; }
-            finally { _lock.ExitReadLock(); }
-        }
+        // Legacy no-op implementations to retire SliceResultDto-based cache
+        public void Set(SliceResultDto slice) { /* no-op */ }
+        public bool TryGet(out SliceResultDto? slice) { slice = null; return false; }
 
         public void SetDepartment(DepartmentSliceResultDto dept)
         {

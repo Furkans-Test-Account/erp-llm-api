@@ -406,9 +406,11 @@ namespace Api.Services
                 .ToList();
             if (cols.Count == 0) return (DefaultCode, DefaultName);
 
-            // Öncelikli adaylar (TR & EN)
-            string? code = cols.FirstOrDefault(n => Regex.IsMatch(n, @"\b(Code|Kod|Kodu)\b", RegexOptions.IgnoreCase));
-            string? name = cols.FirstOrDefault(n => Regex.IsMatch(n, @"\b(Name|Ad[ıi]?|A[çc]ıklama|Description|Title)\b", RegexOptions.IgnoreCase));
+            // Öncelikli adaylar (TR & EN) — güçlendirilmiş regex'ler
+            string? code = cols.FirstOrDefault(n =>
+                Regex.IsMatch(n, @"\b(Code|Kod|Kodu|[A-Za-z0-9]+Code)\b", RegexOptions.IgnoreCase));
+            string? name = cols.FirstOrDefault(n =>
+                Regex.IsMatch(n, @"\b(Name|Ad[ıi]?|A[çc]ıklama|Description|Title|ShortName|LongName)\b", RegexOptions.IgnoreCase));
 
             // Fallback: "Code"/"Name" birebir varsa onları kullan
             code ??= cols.FirstOrDefault(n => n.Equals("Code", StringComparison.OrdinalIgnoreCase));

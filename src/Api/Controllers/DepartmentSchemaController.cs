@@ -90,11 +90,8 @@ namespace Api.Controllers
                     indented: indented
                 );
 
-                // 4-A) Department-aware cache’e set et (AllowedRefViews/FkEdges/BridgeRefs korunur)
+                // 4) Department-aware cache’e set et (AllowedRefViews/FkEdges/BridgeRefs korunur)
                 _cache.SetDepartment(deptSlice);
-
-                // 4-B) ✅ ADAPTER: DepartmentSliceResultDto -> SliceResultDto dönüştür ve legacy cache’e de set et
-                TrySetLegacyCacheAdapter(deptSlice);
 
                 return Ok(new
                 {
@@ -139,21 +136,12 @@ namespace Api.Controllers
                 var json = System.IO.File.ReadAllText(fullPath, Encoding.UTF8);
                 var opts = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
 
-                // Önce DepartmentSliceResultDto dene
+                // Only DepartmentSliceResultDto is supported
                 var dept = JsonSerializer.Deserialize<DepartmentSliceResultDto>(json, opts);
                 if (dept != null)
                 {
-                    _cache.SetDepartment(dept);         // department-aware cache
-                    TrySetLegacyCacheAdapter(dept);     // legacy adapter cache
+                    _cache.SetDepartment(dept);
                     return Ok(new { activated = true, from = fullPath, type = "DepartmentSliceResultDto" });
-                }
-
-                // Olmadıysa SliceResultDto dene (legacy)
-                var legacy = JsonSerializer.Deserialize<SliceResultDto>(json, opts);
-                if (legacy != null)
-                {
-                    _cache.Set(legacy);
-                    return Ok(new { activated = true, from = fullPath, type = "SliceResultDto" });
                 }
 
                 return BadRequest(new { error = "Unsupported slice JSON shape" });
@@ -251,51 +239,7 @@ namespace Api.Controllers
             return (fullPath, info.Length, fileName);
         }
 
-        // ------------------------------------------------------------
-        // ✅ ADAPTER: DepartmentSliceResultDto -> SliceResultDto + legacy cache set
-        //   (Tür uyuşmazlıklarını giderir: List<string> vs string[], List<object> vs List<FkEdgeDto> vb.)
-        // ------------------------------------------------------------
-        private void TrySetLegacyCacheAdapter(DepartmentSliceResultDto deptSlice)
-        {
-            try
-            {
-                var deptPacks = deptSlice.Packs ?? new List<DepartmentPackDto>();
-
-                // DepartmentPackDto -> PackDto dönüşümü: FK/Bridge korunur; Summary/Grain boş bırakılır
-                var packs = new List<PackDto>(deptPacks.Count);
-                foreach (var p in deptPacks)
-                {
-                    var tablesCore = p.TablesCore ?? new List<string>();
-                    var tablesSatellite = p.TablesSatellite ?? new List<string>();
-
-                    // FkEdges ve BridgeRefs projeden projeye farklı tiplerde gelebilir -> normalize et
-                    var fkEdges = CoerceFkEdges(GetEnumerableObject(GetProp(p, "FkEdges")));
-                    var bridgeRefs = CoerceBridgeRefs(GetEnumerableObject(GetProp(p, "BridgeRefs")));
-
-                    packs.Add(new PackDto(
-                        CategoryId: p.CategoryId,
-                        Name: p.Name ?? p.CategoryId,
-                        TablesCore: tablesCore,                // IReadOnlyList<string>
-                        TablesSatellite: tablesSatellite,      // IReadOnlyList<string>
-                        FkEdges: fkEdges,                      // List<FkEdgeDto>
-                        BridgeRefs: bridgeRefs,                // IReadOnlyList<BridgeRefDto>
-                        Summary: string.Empty,
-                        Grain: string.Empty
-                    ));
-                }
-
-                var legacy = new SliceResultDto(
-                    SchemaName: deptSlice.SchemaName,
-                    Packs: packs
-                );
-
-                _cache.Set(legacy);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Legacy cache adapter failed; skipping legacy cache write.");
-            }
-        }
+        // (Removed) Legacy adapter to SliceResultDto
 
         // ------------------------------------------------------------
         // Adapter helpers (reflection ile gevşek tipleri normalize eder)
@@ -387,15 +331,25 @@ namespace Api.Controllers
 
             if (p is null) return NotFound(new { error = "Pack not found", categoryId });
 
+            var cleanedBridges = (p.BridgeRefs ?? new List<object>())
+                .Select(b => b as BridgeRefDto ??
+                    (b != null ? new BridgeRefDto(
+                        b.GetType().GetProperty("ToCategory")?.GetValue(b)?.ToString() ?? string.Empty,
+                        ToStringList(GetEnumerableObject(b.GetType().GetProperty("ViaTables")?.GetValue(b)))
+                    ) : null))
+                .Where(br => br != null && (br!.ViaTables?.Count ?? 0) > 0)
+                .Cast<BridgeRefDto>()
+                .ToList();
+
             return Ok(new
             {
                 p.CategoryId,
                 p.Name,
                 core = p.TablesCore,
                 sat = p.TablesSatellite,
-                fkEdges = p.FkEdges,           // FK’ler burada görünmeli
-                bridges = p.BridgeRefs,        // Köprü referansları
-                lookups = p.AllowedRefViews    // Sözlük/görünüm listesi
+                fkEdges = p.FkEdges,
+                bridges = cleanedBridges,
+                lookups = p.AllowedRefViews
             });
         }
 

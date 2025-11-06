@@ -3,6 +3,7 @@
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Reflection;
+using System.Linq;
 using Api.DTOs;
 using Api.Services.Abstractions;
 
@@ -10,49 +11,112 @@ namespace Api.Services
 {
     public class PromptBuilder : IPromptBuilder
     {
-        // (Removed) LLM-based schema slicing prompt is no longer needed
-
-        // 2) Routing prompt (soru -> pack)
+        // 1) Routing prompt (soru -> tek pack)  ✅ RE-ENABLED & HARDENED
         public string BuildRoutingPrompt(SliceResultDto sliced, string userQuestion, int topK = 3)
         {
             if (topK < 1) topK = 1;
             if (topK > 6) topK = 6;
 
-            var sb = new StringBuilder();
-            sb.AppendLine("You are a routing assistant.");
-            sb.AppendLine("Task: Given a list of packs and a user question, choose the single best pack that should be used to answer the question.");
-            sb.AppendLine($"Return up to top {topK} candidates as well.");
-            sb.AppendLine();
-            sb.AppendLine("Output STRICT JSON ONLY with this exact shape:");
-            sb.AppendLine("{");
-            sb.AppendLine("  \"selectedCategoryId\": string,");
-            sb.AppendLine("  \"candidateCategoryIds\": [string],");
-            sb.AppendLine("  \"reason\": string");
-            sb.AppendLine("}");
-            sb.AppendLine();
-            sb.AppendLine("Heuristics (TR):");
-            sb.AppendLine("- 'cari', 'müşteri', 'tedarikçi' -> cari_hesap");
-            sb.AppendLine("- 'sipariş', 'fatura', 'satış', 'ciro' -> satis_finans / lojistik");
-            sb.AppendLine("- 'depo', 'stok', 'sayım', 'barkod' -> depo_stok");
-            sb.AppendLine("- 'mağaza', 'ofis', 'şube', 'kasa', 'ekip' -> organizasyon");
-            sb.AppendLine("- 'parametre', 'tanim', 'dil' -> sistem_parametre / sozluk_kod");
-            sb.AppendLine("- Never invent category IDs; choose from provided list only.");
-            sb.AppendLine();
-            sb.AppendLine("Available packs:");
+            // Domain kelimeleri
+            var depoTriggers = new[]
+            {
+                "depo","depolar arası","ambar","stok","raf","barkod","sayım",
+                "irsaliye","transfer","taşıma","taşınan","sevkiyat","sevk",
+                "çıkış","giriş","ürün çıkışı","ürün girişi","warehouse",
+                "inventory","movement","transfer slip"
+            };
+
+            var ikTriggers = new[]
+            {
+                "ik","insan kaynak","bordro","maaş","ücret","personel","çalışan",
+                "sgk","işe giriş","işe başlama","işten çıkış","işten ayrılış",
+                "agı","agi","kıdem","ihbar","izin","sendika","işyeri","workplace","payroll"
+            };
+
+            var satisFinansLojistikTriggers = new[]
+            {
+                "sipariş","fatura","satış","ciro","tahsilat","alacak","borç",
+                "irsaliye","kargo","müşteri","sevkiyat","dispatch","shipment","invoice","order"
+            };
+
+            var cariTriggers = new[]
+            {
+                "cari","müşteri","tedarikçi","bakiye","hesap ekstresi","supplier","customer","vendor"
+            };
+
+            var orgTriggers = new[]
+            {
+                "mağaza","ofis","şube","kasa","ekip","departman","organizasyon","store","office","team","pos"
+            };
+
+            var sozlukParamTriggers = new[]
+            {
+                "kod","sözlük","tanım","parametre","ayarl","code list","lookup","dictionary","config","settings"
+            };
+
+            // Pack'leri anahtar kelime torbalarıyla hazırlayalım
+            var packBags = new List<(string Id, string Name, string Summary, string[] Keywords)>();
             foreach (var p in sliced.Packs.OrderBy(x => x.Name))
             {
-                var core = p.TablesCore ?? new List<string>();
-                var sat = p.TablesSatellite ?? new List<string>();
-                var shortCore = string.Join(", ", core.Take(10));
-                var shortSat = string.Join(", ", sat.Take(8));
-                sb.AppendLine($"- id: {p.CategoryId}");
-                sb.AppendLine($"  name: {p.Name}");
-                if (!string.IsNullOrWhiteSpace(p.Summary))
-                    sb.AppendLine($"  summary: {SanitizeInline(p.Summary)}");
-                if (!string.IsNullOrWhiteSpace(p.Grain))
-                    sb.AppendLine($"  grain: {SanitizeInline(p.Grain)}");
-                if (core.Count > 0) sb.AppendLine($"  tablesCore: {shortCore}");
-                if (sat.Count > 0) sb.AppendLine($"  tablesSatellite: {shortSat}");
+                var words = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                foreach (var t in (p.TablesCore ?? new List<string>()).Concat(p.TablesSatellite ?? new List<string>()))
+                {
+                    var w = Regex.Replace(t ?? "", @"[^a-z0-9ğüşöçıİĞÜŞÖÇ]+", " ", RegexOptions.IgnoreCase).ToLowerInvariant();
+                    foreach (var token in w.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+                        words.Add(token);
+                }
+
+                var idL = (p.CategoryId ?? string.Empty).ToLowerInvariant();
+                void add(params string[] ks) { foreach (var k in ks) words.Add(k); }
+
+                if (idL.Contains("depo") || idL.Contains("stok"))
+                    add(depoTriggers);
+                if (idL.Contains("insan") || idL.Contains("kaynak") || idL.Contains("ik"))
+                    add(ikTriggers);
+                if (idL.Contains("satis") || idL.Contains("finans") || idL.Contains("lojistik"))
+                    add(satisFinansLojistikTriggers);
+                if (idL.Contains("cari"))
+                    add(cariTriggers);
+                if (idL.Contains("organizasyon"))
+                    add(orgTriggers);
+                if (idL.Contains("sozluk") || idL.Contains("parametre"))
+                    add(sozlukParamTriggers);
+
+                var id = p.CategoryId ?? string.Empty;
+                var name = string.IsNullOrWhiteSpace(p.Name) ? id : p.Name!;
+                var summary = SanitizeInline(p.Summary ?? string.Empty);
+                packBags.Add((id, name, summary, words.ToArray()));
+            }
+
+            var sb = new StringBuilder();
+            sb.AppendLine("You are a routing assistant.");
+            sb.AppendLine("Task: From the list of packs below and a Turkish user question, pick the SINGLE best pack.");
+            sb.AppendLine($"Also return up to top {topK} candidates.");
+            sb.AppendLine();
+            sb.AppendLine("Output STRICT JSON ONLY:");
+            sb.AppendLine("{\"selectedCategoryId\":string,\"candidateCategoryIds\":[string],\"reason\":string}");
+            sb.AppendLine();
+            sb.AppendLine("Hard rules (language: TR):");
+            sb.AppendLine("- Eğer soru {depo, depolar arası, ambar, stok, sayım, barkod, transfer, sevkiyat, çıkış, giriş} kelimelerini içeriyorsa yüksek öncelikle 'depo_stok' seç.");
+            sb.AppendLine("- Eğer soru {ik, insan kaynak, bordro, maaş, sgk, çalışan, personel} kelimelerini içeriyorsa 'insan_kaynaklari' adayı güçlüdür.");
+            sb.AppendLine("- Eğer soru {sipariş, fatura, satış, ciro, sevkiyat, kargo} içeriyorsa 'satis_finans' veya 'lojistik' adayı güçlüdür (mevcut paket IDs’ine bak).");
+            sb.AppendLine("- Eğer soru {cari, müşteri, tedarikçi, bakiye} içeriyorsa 'cari_hesap' adayı güçlüdür.");
+            sb.AppendLine("- Yine de nihai seçim, anahtar kelime eşleşmesi + paket özet/tables anahtar sözcükleri ile en iyi örtüşen tek pakettir.");
+            sb.AppendLine("- Asla yeni kategori uydurma; sadece listeden seç.");
+            sb.AppendLine();
+            sb.AppendLine("Scoring guidance:");
+            sb.AppendLine("- Case-insensitive keyword overlap between question and each pack’s keywords.");
+            sb.AppendLine("- If a 'Hard rules' group matches, add a large bonus to those packs (e.g., +100).");
+            sb.AppendLine("- Tie-break: prefer packs whose id/name appears in the question; then prefer more core-table keyword hits.");
+            sb.AppendLine();
+            sb.AppendLine("Available packs:");
+            foreach (var (Id, Name, Summary, Keywords) in packBags)
+            {
+                sb.AppendLine($"- id: {Id}");
+                sb.AppendLine($"  name: {Name}");
+                if (!string.IsNullOrWhiteSpace(Summary)) sb.AppendLine($"  summary: {Summary}");
+                if (Keywords.Length > 0) sb.AppendLine($"  keywords: {string.Join(", ", Keywords.Distinct().Take(100))}");
             }
             sb.AppendLine();
             sb.AppendLine($"UserQuestion: {userQuestion}");
@@ -60,12 +124,12 @@ namespace Api.Services
             return sb.ToString();
         }
 
-        // 3) PACK-SCOPED SQL PROMPT — KOLON TİPLERİ + LOOKUP
+        // 2) PACK-SCOPED SQL PROMPT — department-only (no adjacent packs)
         public string BuildPromptForPack(
             string userQuestion,
             PackDto pack,
             SchemaDto fullSchema,
-            IReadOnlyList<PackDto>? adjacentPacks = null,
+            IReadOnlyList<PackDto>? _ignoredAdjacentPacks = null, // kept for signature compat; ignored
             string sqlDialect = "SQL Server (T-SQL)",
             bool requireSingleSelect = true,
             bool forbidDml = true,
@@ -81,10 +145,9 @@ namespace Api.Services
             sb.AppendLine();
             sb.AppendLine("Scope control:");
             sb.AppendLine("- Use ONLY the tables listed below from this pack.");
-            sb.AppendLine("- You may use allowed adjacent pack tables only if explicitly listed.");
             sb.AppendLine("- Use the provided FK edges to build joins; LEFT JOIN if FK can be NULL.");
-            sb.AppendLine();
 
+            sb.AppendLine();
             sb.AppendLine($"Pack: {pack.Name} ({pack.CategoryId})");
             if (!string.IsNullOrWhiteSpace(pack.Grain))
                 sb.AppendLine($"Grain: {SanitizeInline(pack.Grain)}");
@@ -105,27 +168,18 @@ namespace Api.Services
 
             if (pack.BridgeRefs?.Count > 0)
             {
-                sb.AppendLine("Bridges (to other packs):");
-                foreach (var br in pack.BridgeRefs)
-                    sb.AppendLine($" - via {string.Join(",", br.ViaTables ?? new List<string>())} -> {br.ToCategory}");
-            }
-
-            // Adjacent pack’ler: yalnız core tablolar izinli
-            var allowedAdjacentTables = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            if (adjacentPacks != null && adjacentPacks.Count > 0)
-            {
-                sb.AppendLine();
-                sb.AppendLine("Adjacent packs allowed (core tables only, if necessary):");
-                foreach (var ap in adjacentPacks)
+                var nonEmpty = pack.BridgeRefs
+                    .Where(br => br?.ViaTables != null && br.ViaTables.Count > 0)
+                    .ToList();
+                if (nonEmpty.Count > 0)
                 {
-                    var coreList = ap.TablesCore ?? new List<string>();
-                    foreach (var t in coreList) allowedAdjacentTables.Add(t);
-                    if (coreList.Count > 0)
-                        sb.AppendLine($" * {ap.Name}: {string.Join(", ", coreList)}");
+                    sb.AppendLine("Bridges (to other packs):");
+                    foreach (var br in nonEmpty)
+                        sb.AppendLine($" - via {string.Join(",", br.ViaTables)} -> {br.ToCategory}");
                 }
             }
 
-            // Pack şema detayları — KOLON + TİP
+            // Pack schema details — with column types
             sb.AppendLine();
             sb.AppendLine("Pack schema details (with types):");
             var allowedMain = new HashSet<string>(core.Concat(sat), StringComparer.OrdinalIgnoreCase);
@@ -140,20 +194,6 @@ namespace Api.Services
                 {
                     var rendered = string.Join(", ", t.Columns.Select(RenderColumnSignature));
                     sb.AppendLine("  columns: " + rendered);
-                }
-            }
-
-            if (allowedAdjacentTables.Count > 0)
-            {
-                sb.AppendLine();
-                sb.AppendLine("Adjacent schema details (core only, with types):");
-                foreach (var t in fullSchema.Tables.Where(t => allowedAdjacentTables.Contains(t.Name)))
-                {
-                    sb.AppendLine($"- {t.Name}:");
-                    if (!string.IsNullOrWhiteSpace(t.Description))
-                        sb.AppendLine($"  desc: {SanitizeInline(t.Description)}");
-                    if (t.Columns?.Count > 0)
-                        sb.AppendLine("  columns: " + string.Join(", ", t.Columns.Select(RenderColumnSignature)));
                 }
             }
 
@@ -183,20 +223,20 @@ namespace Api.Services
             return sb.ToString();
         }
 
-        // 3.b) DepartmentPackDto overload (FK/Bridges/AllowedRefViews korunur)
+        // 2.b) DepartmentPackDto overload — department-only, with lookup whitelist details
         public string BuildPromptForPack(
             string userQuestion,
             DepartmentPackDto deptPack,
             SchemaDto fullSchema,
-            IReadOnlyList<DepartmentPackDto>? adjacentPacks = null,
+            IReadOnlyList<DepartmentPackDto>? _ignoredAdjacentPacks = null, // ignored
             string sqlDialect = "SQL Server (T-SQL)",
             bool requireSingleSelect = true,
             bool forbidDml = true,
             bool preferAnsi = true)
         {
-            // deptPack.FkEdges / BridgeRefs bazı projelerde List<object> olabilir
-            var fkEdges = CoerceFkEdges(GetAsObjectEnumerable(GetProp(deptPack, "FkEdges")));
-            var bridges = CoerceBridgeRefs(GetAsObjectEnumerable(GetProp(deptPack, "BridgeRefs")));
+            // Coerce FK/Bridge using RAW props (not ToString)
+            var fkEdges = CoerceFkEdges(GetAsObjectEnumerable(GetPropRaw(deptPack, "FkEdges")));
+            var bridges = CoerceBridgeRefs(GetAsObjectEnumerable(GetPropRaw(deptPack, "BridgeRefs")));
 
             var name = GetProp(deptPack, "Name") ?? deptPack.CategoryId;
             var tablesCore = (deptPack.TablesCore ?? new List<string>()).ToList();
@@ -213,99 +253,103 @@ namespace Api.Services
                 Grain: string.Empty
             );
 
-            IReadOnlyList<PackDto>? adjacent = null;
-            if (adjacentPacks != null && adjacentPacks.Count > 0)
-            {
-                var list = new List<PackDto>();
-                foreach (var ap in adjacentPacks)
-                {
-                    var apFk = CoerceFkEdges(GetAsObjectEnumerable(GetProp(ap, "FkEdges")));
-                    var apBr = CoerceBridgeRefs(GetAsObjectEnumerable(GetProp(ap, "BridgeRefs")));
-                    var apName = GetProp(ap, "Name") ?? ap.CategoryId;
+            // Build base prompt
+            var basePrompt = BuildPromptForPack(userQuestion, pack, fullSchema, null, sqlDialect, requireSingleSelect, forbidDml, preferAnsi);
 
-                    list.Add(new PackDto(
-                        ap.CategoryId,
-                        apName,
-                        ap.TablesCore ?? new List<string>(),
-                        ap.TablesSatellite ?? new List<string>(),
-                        apFk,
-                        apBr,
-                        Summary: string.Empty,
-                        Grain: string.Empty
-                    ));
+            // AllowedRefViews — RAW list of objects
+            var refSpecs = GetAsObjectEnumerable(GetPropRaw(deptPack, "AllowedRefViews"));
+            if (refSpecs == null) return basePrompt;
+
+            var appendix = new StringBuilder();
+            var allowedSourceTables = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            appendix.AppendLine();
+            appendix.AppendLine("Lookup tables you MAY join (only from this list):");
+            foreach (var o in refSpecs)
+            {
+                var n = GetProp(o, "Name");
+                var src = GetProp(o, "SourceTable");
+                var colsEnum = GetAsObjectEnumerable(GetPropRaw(o, "Columns"));
+                var cols = ToStringList(colsEnum);
+
+                if (!string.IsNullOrWhiteSpace(n) && !string.IsNullOrWhiteSpace(src))
+                {
+                    appendix.AppendLine($" * {n}: {src} ({string.Join(", ", cols)})");
+                    allowedSourceTables.Add(src!);
                 }
-                adjacent = list;
             }
 
-            var basePrompt = BuildPromptForPack(userQuestion, pack, fullSchema, adjacent, sqlDialect, requireSingleSelect, forbidDml, preferAnsi);
+            var refSourceNames = refSpecs
+                .Select(r => GetProp(r, "SourceTable"))
+                .Where(s => !string.IsNullOrWhiteSpace(s))
+                .Cast<string>()
+                .ToList();
 
-            // AllowedRefViews (List<string> ya da List<object> olabilir) → string list
-            var allowedRefViews = ToStringList(GetAsObjectEnumerable(GetProp(deptPack, "AllowedRefViews")));
-            if (allowedRefViews.Count == 0)
-                return basePrompt;
+            var hints = BuildLookupHintsForDept(deptPack, fullSchema, refSourceNames);
 
-            var append = new StringBuilder();
-            append.AppendLine();
-            append.AppendLine("Lookup tables you MAY join (only from this list):");
-            append.AppendLine(string.Join(", ", allowedRefViews));
-
-            // lookup join hints
-            var lookupHints = BuildLookupHintsForDept(deptPack, fullSchema, allowedRefViews);
-            if (lookupHints.Count > 0)
+            if (deptPack.CategoryId.Equals("insan_kaynaklari", StringComparison.OrdinalIgnoreCase))
             {
-                append.AppendLine("Lookup join hints (keys):");
-                foreach (var h in lookupHints) append.AppendLine($" - {h}");
-            }
-
-            // Lookup şema detayları
-            var allowedLookup = new HashSet<string>(allowedRefViews, StringComparer.OrdinalIgnoreCase);
-            var lookups = fullSchema.Tables.Where(t => allowedLookup.Contains(t.Name)).ToList();
-            if (lookups.Count > 0)
-            {
-                append.AppendLine();
-                append.AppendLine("Lookup schema details (with types):");
-                foreach (var t in lookups)
+                void addHintIfAllowed(string srcTable, string srcCols, string refTable, string refCols)
                 {
-                    append.AppendLine($"- {t.Name}:");
+                    if (allowedSourceTables.Contains(refTable))
+                        hints.Add($"{srcTable}.({srcCols}) -> {refTable}.({refCols})");
+                }
+
+                addHintIfAllowed("hrEmployeePayrollProfile", "CurrAccTypeCode, CurrAccCode", "cdCurrAcc", "CurrAccTypeCode, Code");
+                addHintIfAllowed("hrEmployeeJobTitle", "JobTitleCode", "cdJobTitle", "JobTitleCode");
+                addHintIfAllowed("hrEmployeeWorkPlace", "WorkPlaceCode", "cdWorkPlace", "WorkPlaceCode");
+                addHintIfAllowed("hrEmployeeMonthlySum", "MissingWorkReasonCode", "cdMissingWorkReason", "MissingWorkReasonCode");
+                addHintIfAllowed("hrEmployeeWage", "CurrencyCode", "cdCurrency", "CurrencyCode");
+                addHintIfAllowed("hrEmployeeMonthlySumDetail", "JobDepartmentCode", "cdJobDepartment", "JobDepartmentCode");
+                addHintIfAllowed("hrSGKMonthlyDocument", "EmploymentLawCode", "cdEmploymentLaw", "EmploymentLawCode");
+            }
+
+            if (hints.Count > 0)
+            {
+                appendix.AppendLine("Lookup join hints (keys):");
+                foreach (var h in hints.Distinct(StringComparer.OrdinalIgnoreCase))
+                    appendix.AppendLine($" - {h}");
+            }
+
+            var lookupTables = fullSchema.Tables.Where(t => allowedSourceTables.Contains(t.Name)).ToList();
+            if (lookupTables.Count > 0)
+            {
+                appendix.AppendLine();
+                appendix.AppendLine("Lookup schema details (with types):");
+                foreach (var t in lookupTables)
+                {
+                    appendix.AppendLine($"- {t.Name}:");
                     if (!string.IsNullOrWhiteSpace(t.Description))
-                        append.AppendLine($"  desc: {SanitizeInline(t.Description)}");
+                        appendix.AppendLine($"  desc: {SanitizeInline(t.Description)}");
                     if (t.Columns?.Count > 0)
-                        append.AppendLine("  columns: " + string.Join(", ", t.Columns.Select(RenderColumnSignature)));
+                        appendix.AppendLine("  columns: " + string.Join(", ", t.Columns.Select(RenderColumnSignature)));
                 }
             }
 
-            return basePrompt + Environment.NewLine + append.ToString();
+            return basePrompt + Environment.NewLine + appendix.ToString();
         }
 
-        // 4) categoryId ile prompt üret (DepartmentSliceResultDto)
+        // 3) categoryId -> prompt (department-only)
         public string BuildPromptForCategory(
             string userQuestion,
             DepartmentSliceResultDto deptSlice,
             string categoryId,
             SchemaDto fullSchema,
-            IReadOnlyList<string>? adjacentCategoryIds = null,
+            IReadOnlyList<string>? _ignoredAdjacentCategoryIds = null, // ignored
             string sqlDialect = "SQL Server (T-SQL)")
         {
             var deptPack = deptSlice.Packs.FirstOrDefault(p =>
                 string.Equals(p.CategoryId, categoryId, StringComparison.OrdinalIgnoreCase))
                 ?? throw new ArgumentException($"Pack not found for categoryId: {categoryId}");
 
-            IReadOnlyList<DepartmentPackDto>? adjacent = null;
-            if (adjacentCategoryIds != null && adjacentCategoryIds.Count > 0)
-            {
-                adjacent = deptSlice.Packs
-                    .Where(p => adjacentCategoryIds.Contains(p.CategoryId, StringComparer.OrdinalIgnoreCase))
-                    .ToList();
-            }
-
-            return BuildPromptForPack(userQuestion, deptPack, fullSchema, adjacent, sqlDialect);
+            return BuildPromptForPack(userQuestion, deptPack, fullSchema, null, sqlDialect);
         }
 
         // ------------------------------- Helpers -------------------------------
         private static string SanitizeInline(string s)
         {
-            var one = Regex.Replace(s, @"\s+", " ").Trim();
-            one = one.Replace("\"", "'");
+            var one = Regex.Replace(s, @"\\s+", " ").Trim();
+            one = one.Replace("\"", "'"); // keep LLM JSON simple
             return one;
         }
 
@@ -327,7 +371,13 @@ namespace Api.Services
             var p = o.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
             if (p == null) return null;
             var v = p.GetValue(o);
-            return v?.ToString(); // <- CS0266 fix: daima string? döndür
+            return v?.ToString();
+        }
+
+        private static object? GetPropRaw(object o, string name)
+        {
+            var p = o.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.Instance | BindingFlags.IgnoreCase);
+            return p?.GetValue(o);
         }
 
         private static IEnumerable<object>? GetAsObjectEnumerable(object? value)
@@ -405,13 +455,12 @@ namespace Api.Services
             return list;
         }
 
-        // Basit heuristic: Pack’teki *Code alanlarını AllowedRefViews ile eşleştir
-        private static List<string> BuildLookupHintsForDept(DepartmentPackDto pack, SchemaDto schema, IReadOnlyList<string> allowedRefViews)
+        private static List<string> BuildLookupHintsForDept(DepartmentPackDto pack, SchemaDto schema, IReadOnlyList<string> allowedLookupSourceTables)
         {
             var hints = new List<string>();
-            if (allowedRefViews.Count == 0) return hints;
+            if (allowedLookupSourceTables.Count == 0) return hints;
 
-            var allowed = new HashSet<string>(allowedRefViews, StringComparer.OrdinalIgnoreCase);
+            var allowed = new HashSet<string>(allowedLookupSourceTables, StringComparer.OrdinalIgnoreCase);
             var packTables = new HashSet<string>(
                 (pack.TablesCore ?? new List<string>()).Concat(pack.TablesSatellite ?? new List<string>()),
                 StringComparer.OrdinalIgnoreCase
@@ -426,18 +475,10 @@ namespace Api.Services
             foreach (var (tbl, col) in codeCols)
             {
                 var baseName = col.Substring(0, col.Length - "Code".Length);
-                var candidates = new List<string?>
-                {
-                    "cd" + baseName,
-                    "cd" + baseName + "Desc"
-                };
-                if (baseName.StartsWith("SGK", StringComparison.OrdinalIgnoreCase))
-                    candidates.Add("cd" + baseName);
-
-                var hit = candidates
-                    .Where(s => !string.IsNullOrWhiteSpace(s))
-                    .FirstOrDefault(s => allowed.Contains(s!)); // <- CS8622 fix: non-null garanti
-                if (hit != null) hints.Add($"{tbl}.{col} -> {hit}.{col}");
+                var guesses = new[] { "cd" + baseName, "df" + baseName, "bs" + baseName };
+                var hit = guesses.FirstOrDefault(g => allowed.Contains(g));
+                if (!string.IsNullOrWhiteSpace(hit))
+                    hints.Add($"{tbl}.{col} -> {hit}.Code");
             }
 
             return hints.Distinct(StringComparer.OrdinalIgnoreCase).ToList();

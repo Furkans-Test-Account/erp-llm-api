@@ -15,7 +15,6 @@ namespace Api.Controllers
         private readonly ISchemaService _schemaService;
         private readonly ISlicedSchemaCache _cache;
         private readonly IPromptBuilder _promptBuilder;
-        private readonly ILlmService _llmService;
         private readonly ISqlValidator _validator;
         private readonly ISqlExecutor _executor;
         private readonly SelfHealingSqlRunner _runner;
@@ -25,7 +24,6 @@ namespace Api.Controllers
             ISchemaService schemaService,
             ISlicedSchemaCache cache,
             IPromptBuilder promptBuilder,
-            ILlmService llmService,
             ISqlValidator validator,
             ISqlExecutor executor,
             SelfHealingSqlRunner runner,
@@ -34,7 +32,6 @@ namespace Api.Controllers
             _schemaService = schemaService;
             _cache = cache;
             _promptBuilder = promptBuilder;
-            _llmService = llmService;
             _validator = validator;
             _executor = executor;
             _runner = runner;
@@ -47,8 +44,8 @@ namespace Api.Controllers
         {
             try
             {
-                if (!_cache.TryGet(out var sliced) || sliced == null)
-                    return BadRequest(new { error = "No cached sliced schema. Run POST /api/schema/slice/llm first." });
+                if (!_cache.TryGetDepartment(out var dept) || dept == null)
+                    return BadRequest(new { error = "No department slice cached. Upload & activate via /api/schema/dept endpoints." });
 
                 var threadId = await _history.EnsureThreadAsync(req.ConversationId, ct);
                 await _history.AppendAsync(new ChatMessageDto(
@@ -112,49 +109,20 @@ namespace Api.Controllers
                     : $"Context from previous turns:\n{convoSnippet}\n\nCurrent request: {req.Question ?? string.Empty}";
 
                 var schema = await _schemaService.GetSchemaAsync(ct);
-                var routePrompt = _promptBuilder.BuildRoutingPrompt(sliced, userQuestionWithContext);
-                var routeJson = await _llmService.GetRawJsonAsync(routePrompt, ct);
-
-                RouteResponseDto? route;
-                try
-                {
-                    route = JsonSerializer.Deserialize<RouteResponseDto>(routeJson,
-                        new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
-                            ?? throw new InvalidOperationException("Failed to parse LLM route JSON.");
-                }
-                catch (Exception ex)
-                {
-                    await _history.AppendAsync(new ChatMessageDto(
-                        Id: Guid.NewGuid().ToString("N"),
-                        ThreadId: threadId,
-                        Role: "assistant",
-                        Content: $"Error while routing: {ex.Message}",
-                        Sql: null,
-                        Error: $"LLM route JSON parse failed: {ex.Message}",
-                        CreatedAtUtc: DateTime.UtcNow
-                    ), ct);
-
-                    return BadRequest(new { error = "LLM route JSON parse failed", detail = ex.Message, raw = routeJson });
-                }
-
-                var pack = sliced.Packs.FirstOrDefault(p => p.CategoryId == route.SelectedCategoryId);
+                // Simple deterministic routing: pick the first pack
+                var pack = dept.Packs.FirstOrDefault();
                 if (pack == null)
-                {
-                    await _history.AppendAsync(new ChatMessageDto(
-                        Id: Guid.NewGuid().ToString("N"),
-                        ThreadId: threadId,
-                        Role: "assistant",
-                        Content: "Selected pack not found.",
-                        Sql: null,
-                        Error: "Selected pack not found in sliced schema",
-                        CreatedAtUtc: DateTime.UtcNow
-                    ), ct);
+                    return BadRequest(new { error = "No packs in department slice" });
 
-                    return BadRequest(new { error = "Selected pack not found in sliced schema", route });
-                }
-
-                var adjacent = sliced.Packs
-                    .Where(p => route.CandidateCategoryIds.Contains(p.CategoryId) && p.CategoryId != pack.CategoryId)
+                // adjacent: derive from bridge refs (toCategory)
+                var adjacentIds = (pack.BridgeRefs ?? new List<object>())
+                    .Select(b => (b as BridgeRefDto)?.ToCategory
+                        ?? b?.GetType().GetProperty("ToCategory")?.GetValue(b)?.ToString())
+                    .Where(s => !string.IsNullOrWhiteSpace(s))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                var adjacent = dept.Packs
+                    .Where(p => adjacentIds.Contains(p.CategoryId, StringComparer.OrdinalIgnoreCase))
                     .Take(1)
                     .ToList();
 
@@ -167,9 +135,9 @@ Good:
 
                 var sqlPrompt = _promptBuilder.BuildPromptForPack(
                     userQuestion: userQuestionWithContext,
-                    pack: pack,
-                    fullSchema: schema,
-                    adjacentPacks: adjacent,
+                    pack,
+                    schema,
+                    adjacent,
                     sqlDialect: "SQL Server (T-SQL)",
                     requireSingleSelect: true,
                     forbidDml: true,
@@ -177,10 +145,10 @@ Good:
                 );
 
                 var allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var t in pack.TablesCore) allowed.Add(t);
-                foreach (var t in pack.TablesSatellite ?? Array.Empty<string>()) allowed.Add(t);
+                foreach (var t in pack.TablesCore ?? new List<string>()) allowed.Add(t);
+                foreach (var t in pack.TablesSatellite ?? new List<string>()) allowed.Add(t);
                 foreach (var ap in adjacent)
-                    foreach (var t in (ap.TablesCore ?? Array.Empty<string>())) allowed.Add(t);
+                    foreach (var t in (ap.TablesCore ?? new List<string>())) allowed.Add(t);
 
                 string finalSql;
                 object? data;
@@ -237,7 +205,7 @@ Good:
                     var columns = TryGetColumns(result);
                     var rowsObj = TryGetRows(result);
                     List<Dictionary<string, object?>>? rowDicts = null;
-                    List<object[]?>? rowArrays = null;
+                    List<object[]>? rowArrays = null;
                     if (rowsObj is IEnumerable<object[]> asArrays)
                     {
                         rowArrays = asArrays.ToList();
@@ -366,13 +334,13 @@ Good:
                     sql = finalSql,
                     result = data,
                     pack = pack.CategoryId,
-                    candidates = route.CandidateCategoryIds,
+                    candidates = adjacent.Select(a => a.CategoryId).ToList(),
                     conversationId = threadId
                 });
             }
             catch (Exception ex)
             {
-                // Optionally log the exception here, if you have a logger
+                
                 return StatusCode(500, new { error = "Failed to process query", detail = ex.Message });
             }
         }

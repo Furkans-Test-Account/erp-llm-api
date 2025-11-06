@@ -46,7 +46,7 @@ namespace Api.Services
                 if (!_validator.TryValidate(sql, allowedTables.ToList(), out var validationError))
                 {
                     if (attempt > maxRetries + 1)
-                        throw new InvalidOperationException(BuildExhaustedMessage("Validation failed", sql, validationError));
+                        throw new InvalidOperationException(BuildExhaustedMessage("Validation failed", sql, validationError ?? string.Empty));
 
                     sql = await _llm.RefineSqlAsync(
                         userQuestion: userQuestion,
