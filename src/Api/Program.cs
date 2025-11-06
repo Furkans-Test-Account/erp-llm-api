@@ -8,14 +8,10 @@ using Microsoft.OpenApi.Models;
 using Microsoft.Extensions.Options;
 using System;
 
-// ---------------------------------
-// WebApplication Bootstrap
-// ---------------------------------
+
 var builder = WebApplication.CreateBuilder(args);
 
-// -----------------------------
-// Serilog
-// -----------------------------
+
 builder.Host.UseSerilog((ctx, cfg) =>
 {
     cfg.ReadFrom.Configuration(ctx.Configuration)
@@ -23,9 +19,7 @@ builder.Host.UseSerilog((ctx, cfg) =>
        .Enrich.FromLogContext();
 });
 
-// -----------------------------
-// CORS (Vite dev server için 5173)
-// -----------------------------
+
 const string CorsPolicy = "DevCors";
 builder.Services.AddCors(options =>
 {
@@ -37,9 +31,7 @@ builder.Services.AddCors(options =>
     });
 });
 
-// -----------------------------
-// Controllers + Swagger
-// -----------------------------
+
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
@@ -48,24 +40,19 @@ builder.Services.AddSwaggerGen(c =>
     c.ResolveConflictingActions(apiDescriptions => apiDescriptions.First());
 });
 
-// -----------------------------
-// DI – EXISTING SERVICES
-// -----------------------------
+
 builder.Services.AddScoped<ISchemaService, SchemaServiceSqlServer>();
 builder.Services.AddScoped<ISqlValidator, SqlValidator>();
 builder.Services.AddScoped<ISqlExecutor, SqlExecutor>();
 builder.Services.AddSingleton<IPromptBuilder, PromptBuilder>();
 builder.Services.AddSingleton<IChatHistoryStore, ChatHistorySqlite>();
 
-// Department-aware + legacy slice cache tek yerde
-// Removed: schema slicing cache
 
-// LLM denetim (audit) ve opsiyonları
 builder.Services.Configure<LlmAuditOptions>(builder.Configuration.GetSection("LlmAudit"));
 builder.Services.AddSingleton<ILlmAudit, LlmAuditFile>();
 
 // LLM service + runner
-// IMPORTANT: BaseAddress ayarı yapıldı => “invalid request URI” hatası çözülür
+// IMPORTANT:
 builder.Services.AddHttpClient<ILlmService, LlmService>(client =>
 {
     var baseUrl = builder.Configuration["OpenAI:BaseUrl"] ?? "https://api.openai.com/";

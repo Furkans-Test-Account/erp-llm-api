@@ -18,15 +18,3 @@ public record PackDto(
     string Grain                       // veri taneciği (örn: "Order=header, OrderItems=line")
 );
 
-public record SliceResultDto(
-    string SchemaName,
-    IReadOnlyList<PackDto> Packs
-);
-
-public record RouteRequestDto(string Question);
-public record RouteResponseDto(
-    string SelectedCategoryId,
-    string[] CandidateCategoryIds,
-    string Reason
-);
-

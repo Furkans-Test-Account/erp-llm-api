@@ -35,8 +35,7 @@ namespace Api.Controllers
         {
             try
             {
-                // Template-based mode: no department slice required
-
+              
                 var threadId = await _history.EnsureThreadAsync(req.ConversationId, ct);
                 await _history.AppendAsync(new ChatMessageDto(
                     Id: Guid.NewGuid().ToString("N"),
@@ -98,7 +97,7 @@ namespace Api.Controllers
                     ? req.Question ?? string.Empty
                     : $"Context from previous turns:\n{convoSnippet}\n\nCurrent request: {req.Question ?? string.Empty}";
 
-                // Build prompt from hard-coded template (ignoring schema slicing & pack metadata)
+              
                 var emptyPack = new PackDto(
                     CategoryId: string.Empty,
                     Name: string.Empty,

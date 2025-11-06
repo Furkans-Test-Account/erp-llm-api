@@ -18,7 +18,7 @@ namespace Api.Services
             _env = env;
         }
 
-        // TEMP: Hard-coded prompt template path (will be replaced by CategoryId mapping later)
+
         private string GetTemplatePath()
         {
             return Path.Combine(
@@ -37,26 +37,23 @@ namespace Api.Services
                 if (File.Exists(full))
                     return File.ReadAllText(full, Encoding.UTF8);
             }
-            catch { /* ignore and fallback */ }
+            catch { }
 
-            // Minimal fallback to keep runtime functional if file not found
+
             return "You are a SQL generator. Return a single SELECT.\n";
         }
-        // Routing prompt removed
 
-        // 2) PACK-SCOPED SQL PROMPT — department-only (no adjacent packs)
         public string BuildPromptForPack(
             string userQuestion,
             PackDto pack,
             SchemaDto fullSchema,
-            IReadOnlyList<PackDto>? _ignoredAdjacentPacks = null, // kept for signature compat; ignored
+            IReadOnlyList<PackDto>? _ignoredAdjacentPacks = null,
             string sqlDialect = "SQL Server (T-SQL)",
             bool requireSingleSelect = true,
             bool forbidDml = true,
             bool preferAnsi = true)
         {
-            // New behavior: ignore schema slicing/pack metadata and load a hard-coded prompt template
-            // The template itself is expected to contain all instructions (and embedded schema if needed)
+
             var template = LoadTemplateOrFallback();
 
             var sb = new StringBuilder();
@@ -66,6 +63,6 @@ namespace Api.Services
             return sb.ToString();
         }
 
-        // Helpers removed (no longer needed in template-based prompts)
+
     }
 }

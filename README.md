@@ -1,23 +1,83 @@
+# ERP-LLM API
 
-# erp-llm-api (Minimal API, PostgreSQL schema-driven)
+A RESTful API that converts natural language questions into SQL queries using Large Language Models (LLM). The API is designed for ERP systems and uses template-based prompts to generate safe, validated SQL queries.
 
-This is a minimal .NET 8 Web API that:
-- Reads **database schema (with comments)** from PostgreSQL at runtime
-- Builds an LLM prompt from that schema
-- (Stub) Generates a sample SQL
-- Validates and executes the SQL
-- Returns both the SQL and the result
+## Features
 
-## Quick start
-1) Update connection string in `src/Api/appsettings.json`.
-2) Run:
-```bash
-dotnet restore src/Api
-dotnet run --project src/Api
+- **Natural Language to SQL**: Convert Turkish/English questions into SQL Server (T-SQL) queries
+- **Template-Based Prompts**: Uses customizable prompt templates from `App_Data/Prompts/`
+- **SQL Validation**: Automatically validates generated SQL to prevent DML/DDL operations
+- **Self-Healing SQL**: Automatically retries and fixes SQL generation errors
+- **Chat History**: Maintains conversation context using SQLite storage
+- **Audit Logging**: Logs all LLM interactions for debugging and analysis
+- **Schema Inspection**: Optional endpoints to inspect database schema
+
+## Architecture
+
+The API follows a clean architecture pattern with:
+
+- **Controllers**: Handle HTTP requests and responses
+- **Services**: Business logic and LLM integration
+- **DTOs**: Data transfer objects for API contracts
+- **Template System**: File-based prompt templates for different domains
+
+### Key Components
+
+- **PromptBuilder**: Loads and combines prompt templates with user questions
+- **LlmService**: Interfaces with OpenAI API for SQL generation
+- **SqlValidator**: Validates SQL to ensure only SELECT statements are allowed
+- **SelfHealingSqlRunner**: Executes SQL with automatic retry and error correction
+- **ChatHistoryStore**: Manages conversation history in SQLite
+
+## API Endpoints
+
+### Query Endpoints
+
+#### `POST /api/query`
+Converts a natural language question into SQL and executes it.
+
+**Request:**
+```json
+{
+  "question": "Her depo bazında toplam stok miktarını ve toplam tutarı getir",
+  "conversationId": "optional-conversation-id"
+}
 ```
-3) Test endpoints:
-- `GET /api/health`
-- `GET /api/schema`
-- `POST /api/query` with body `{ "question": "Top products?" }`
 
-> Ensure your DB has comments (`COMMENT ON TABLE/COLUMN`) for richer prompts.
+**Response:**
+```json
+{
+  "sql": "SELECT WarehouseCode, SUM(Qty) as TotalQty, SUM(Amount) as TotalAmount FROM ...",
+  "result": { ... },
+  "conversationId": "thread-id"
+}
+```
+
+### Schema Endpoints
+
+#### `GET /api/schema`
+Retrieves the database schema information.
+
+#### `POST /api/schema/save-json`
+Saves the current database schema to `App_Data/Schema.json`.
+
+### Chat Endpoints
+
+#### `POST /api/chat/start`
+Creates a new conversation thread.
+
+**Response:**
+```json
+{
+  "conversationId": "new-thread-id"
+}
+```
+
+#### `GET /api/chat/{id}/messages`
+Retrieves all messages for a conversation thread.
+
+#### `GET /api/chat/list?take=20`
+Lists recent conversation threads (default: 20).
+
+
+
