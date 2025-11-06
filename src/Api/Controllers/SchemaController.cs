@@ -12,16 +12,13 @@ namespace Api.Controllers
     public class SchemaController : ControllerBase
     {
         private readonly ISchemaService _schemaService;
-        private readonly ISlicedSchemaCache _cache;
         private readonly IWebHostEnvironment _env;
 
         public SchemaController(
             ISchemaService schemaService,
-            ISlicedSchemaCache cache,
             IWebHostEnvironment env)
         {
             _schemaService = schemaService;
-            _cache = cache;
             _env = env;
         }
 
@@ -89,33 +86,6 @@ namespace Api.Controllers
                 });
             }
         }
-
-
         
-
-        [HttpGet("slice/cached")]
-        public IActionResult GetSliceCache()
-        {
-            if (_cache.TryGetDepartment(out var dept) && dept != null)
-            {
-                return Ok(new
-                {
-                    cached = true,
-                    kind = "department",
-                    schemaName = dept.SchemaName,
-                    packCount = dept.Packs?.Count ?? 0,
-                    packs = (dept.Packs ?? new List<DepartmentPackDto>())
-                        .Select(p => new
-                        {
-                            p.CategoryId,
-                            p.Name,
-                            coreCount = p.TablesCore?.Count ?? 0,
-                            satCount = p.TablesSatellite?.Count ?? 0
-                        })
-                        .ToList()
-                });
-            }
-            return NotFound(new { error = "No department slice cached. Upload & activate via /api/schema/dept endpoints." });
-        }
     }
 }

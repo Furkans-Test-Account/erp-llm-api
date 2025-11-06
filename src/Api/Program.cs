@@ -58,7 +58,7 @@ builder.Services.AddSingleton<IPromptBuilder, PromptBuilder>();
 builder.Services.AddSingleton<IChatHistoryStore, ChatHistorySqlite>();
 
 // Department-aware + legacy slice cache tek yerde
-builder.Services.AddSingleton<ISlicedSchemaCache, SlicedSchemaCache>();
+// Removed: schema slicing cache
 
 // LLM denetim (audit) ve opsiyonları
 builder.Services.Configure<LlmAuditOptions>(builder.Configuration.GetSection("LlmAudit"));
@@ -74,51 +74,27 @@ builder.Services.AddHttpClient<ILlmService, LlmService>(client =>
 });
 builder.Services.AddScoped<SelfHealingSqlRunner>();
 
-// -----------------------------
-// DI – NEW: Strict department slicer
-// -----------------------------
-builder.Services.AddSingleton<IStrictDepartmentSlicer, StrictSchemaSlicer>();
-
-// DepartmentSliceOptions (policy set)
-// İhtiyaca göre prefix'leri/politikaları burada güncelleyebilirsin.
-builder.Services.AddSingleton<IOptions<DepartmentSliceOptions>>(sp =>
-    Options.Create(new DepartmentSliceOptions(
-        Policies: new[]
-        {
-            new DepartmentPolicy("insan_kaynaklari","İK", new[]{ "hr" }),
-            new DepartmentPolicy("depo_stok","Depo", new[]{ "st" }),
-            new DepartmentPolicy("lojistik","Lojistik", new[]{ "e_" }),
-            new DepartmentPolicy("satis","Satış", new[]{ "tr" }, new[]{ "trAdjustCost" }),
-            new DepartmentPolicy("finans","Finans", new[]{ "bs","gl","trAdjustCost" }),
-            new DepartmentPolicy("sozluk_kod","Sözlük/Kod", new[]{ "cd" }),
-            new DepartmentPolicy("sistem_parametre","Sistem/Parametre", new[]{ "df","sr","tp","au","rp" })
-        },
-        MaxCandidateRefsPerPack: 20,
-        RefTargetsPrefixes: new[] { "cd", "df", "bs" }
-    ))
-);
+// Removed: department slicing DI and policies
 
 // -----------------------------
-// Build
+// Build & Pipeline
 // -----------------------------
 var app = builder.Build();
 
-// -----------------------------
-// Middleware
-// -----------------------------
-// Not: Geliştirmede de Swagger açmak istersen koşulu kaldır:
-// if (app.Environment.IsDevelopment()) { ... }
-app.UseSwagger();
-app.UseSwaggerUI(c =>
+if (app.Environment.IsProduction())
 {
-    c.SwaggerEndpoint("/swagger/v1/swagger.json", "ERP-LLM API V1");
-    c.RoutePrefix = string.Empty;
-});
+    app.UseSwagger();
+    app.UseSwaggerUI(c =>
+    {
+        c.SwaggerEndpoint("/swagger/v1/swagger.json", "ERP-LLM API V1");
+        c.RoutePrefix = string.Empty;
+    });
+}
 
 app.UseSerilogRequestLogging();
 app.UseCors(CorsPolicy);
-app.UseRouting();
 
+app.UseRouting();
 app.UseAuthorization();
 
 app.MapControllers();

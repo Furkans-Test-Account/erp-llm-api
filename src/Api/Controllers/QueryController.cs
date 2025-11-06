@@ -12,28 +12,19 @@ namespace Api.Controllers
     [Route("api/[controller]")]
     public class QueryController : ControllerBase
     {
-        private readonly ISchemaService _schemaService;
-        private readonly ISlicedSchemaCache _cache;
         private readonly IPromptBuilder _promptBuilder;
         private readonly ISqlValidator _validator;
-        private readonly ISqlExecutor _executor;
         private readonly SelfHealingSqlRunner _runner;
         private readonly IChatHistoryStore _history;
 
         public QueryController(
-            ISchemaService schemaService,
-            ISlicedSchemaCache cache,
             IPromptBuilder promptBuilder,
             ISqlValidator validator,
-            ISqlExecutor executor,
             SelfHealingSqlRunner runner,
             IChatHistoryStore history)
         {
-            _schemaService = schemaService;
-            _cache = cache;
             _promptBuilder = promptBuilder;
             _validator = validator;
-            _executor = executor;
             _runner = runner;
             _history = history;
         }
@@ -44,8 +35,7 @@ namespace Api.Controllers
         {
             try
             {
-                if (!_cache.TryGetDepartment(out var dept) || dept == null)
-                    return BadRequest(new { error = "No department slice cached. Upload & activate via /api/schema/dept endpoints." });
+                // Template-based mode: no department slice required
 
                 var threadId = await _history.EnsureThreadAsync(req.ConversationId, ct);
                 await _history.AppendAsync(new ChatMessageDto(
@@ -108,23 +98,18 @@ namespace Api.Controllers
                     ? req.Question ?? string.Empty
                     : $"Context from previous turns:\n{convoSnippet}\n\nCurrent request: {req.Question ?? string.Empty}";
 
-                var schema = await _schemaService.GetSchemaAsync(ct);
-                // Simple deterministic routing: pick the first pack
-                var pack = dept.Packs.FirstOrDefault();
-                if (pack == null)
-                    return BadRequest(new { error = "No packs in department slice" });
-
-                // adjacent: derive from bridge refs (toCategory)
-                var adjacentIds = (pack.BridgeRefs ?? new List<object>())
-                    .Select(b => (b as BridgeRefDto)?.ToCategory
-                        ?? b?.GetType().GetProperty("ToCategory")?.GetValue(b)?.ToString())
-                    .Where(s => !string.IsNullOrWhiteSpace(s))
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToList();
-                var adjacent = dept.Packs
-                    .Where(p => adjacentIds.Contains(p.CategoryId, StringComparer.OrdinalIgnoreCase))
-                    .Take(1)
-                    .ToList();
+                // Build prompt from hard-coded template (ignoring schema slicing & pack metadata)
+                var emptyPack = new PackDto(
+                    CategoryId: string.Empty,
+                    Name: string.Empty,
+                    TablesCore: new List<string>(),
+                    TablesSatellite: new List<string>(),
+                    FkEdges: new List<FkEdgeDto>(),
+                    BridgeRefs: new List<BridgeRefDto>(),
+                    Summary: string.Empty,
+                    Grain: string.Empty
+                );
+                var emptySchema = new SchemaDto("dbo", new List<TableDto>());
 
                 var guardrails = @"HARD ERROR if a string literal is compared to a numeric *Id* column.
 If filtering by a human-readable name, JOIN to the lookup table and filter by its TEXT column.
@@ -135,20 +120,14 @@ Good:
 
                 var sqlPrompt = _promptBuilder.BuildPromptForPack(
                     userQuestion: userQuestionWithContext,
-                    pack,
-                    schema,
-                    adjacent,
+                    emptyPack,
+                    emptySchema,
+                    null,
                     sqlDialect: "SQL Server (T-SQL)",
                     requireSingleSelect: true,
                     forbidDml: true,
                     preferAnsi: true
                 );
-
-                var allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var t in pack.TablesCore ?? new List<string>()) allowed.Add(t);
-                foreach (var t in pack.TablesSatellite ?? new List<string>()) allowed.Add(t);
-                foreach (var ap in adjacent)
-                    foreach (var t in (ap.TablesCore ?? new List<string>())) allowed.Add(t);
 
                 string finalSql;
                 object? data;
@@ -158,7 +137,7 @@ Good:
                     (finalSql, data) = await _runner.RunAsync(
                         promptForPack: sqlPrompt,
                         userQuestion: userQuestionWithContext,
-                        allowedTables: allowed,
+                        allowedTables: new HashSet<string>(StringComparer.OrdinalIgnoreCase),
                         guardrailsPrompt: guardrails,
                         maxRetries: 2,
                         ct: ct
@@ -318,6 +297,13 @@ Good:
                     return text;
                 }
 
+                // Validate generated SQL for DML/DDL or multiple statements
+                var validation = _validator.Validate(finalSql, Array.Empty<string>());
+                if (!validation.IsValid && (validation.Kind == SqlErrorKind.DisallowedDml || validation.Kind == SqlErrorKind.MultipleStatements))
+                {
+                    return BadRequest(new { error = "Disallowed SQL", detail = validation.Message });
+                }
+
                 var assistantText = BuildAssistantContent(data);
                 await _history.AppendAsync(new ChatMessageDto(
                     Id: Guid.NewGuid().ToString("N"),
@@ -333,8 +319,6 @@ Good:
                 {
                     sql = finalSql,
                     result = data,
-                    pack = pack.CategoryId,
-                    candidates = adjacent.Select(a => a.CategoryId).ToList(),
                     conversationId = threadId
                 });
             }

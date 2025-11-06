@@ -63,14 +63,17 @@ namespace Api.Services
                 return Fail(SqlErrorKind.IdVsStringCompare,
                     "String literal compared to an Id column. Join to the lookup table and filter by its TEXT column.");
 
-            // check allowed tables
-            var usedTables = ExtractTables(sql);
-            foreach (var t in usedTables)
+            // check allowed tables only if a whitelist is provided
+            if (allowedTables != null && allowedTables.Count > 0)
             {
-                var bare = NormalizeTableName(t);
-                if (!IsAllowed(bare, allowedTables))
-                    return Fail(SqlErrorKind.DisallowedTable,
-                        $"Table '{bare}' is not allowed. Allowed: {string.Join(", ", allowedTables)}");
+                var usedTables = ExtractTables(sql);
+                foreach (var t in usedTables)
+                {
+                    var bare = NormalizeTableName(t);
+                    if (!IsAllowed(bare, allowedTables))
+                        return Fail(SqlErrorKind.DisallowedTable,
+                            $"Table '{bare}' is not allowed. Allowed: {string.Join(", ", allowedTables)}");
+                }
             }
 
             // FROM check
